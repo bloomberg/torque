@@ -1,5 +1,5 @@
 /**
-Torque 2.15.0
+Torque 2.15.1
 Temporal mapping for CartoDB
 https://github.com/cartodb/torque
 **/
@@ -1284,7 +1284,7 @@ CanvasLayer.prototype.scheduleUpdate = function() {
 module.exports = CanvasLayer;
 
 },{}],7:[function(require,module,exports){
-/*
+    /*
  ====================
  canvas setup for drawing tiles
  ====================
@@ -1708,7 +1708,7 @@ GMapsTorqueLayer.prototype = torque.extend({},
       self.fire('change:steps', {
         steps: self.provider.getSteps()
       });
-      self.setKey(self.getKey());
+      self.setKeys(self.getKeys());
     };
 
     this.provider = new this.providers[this.options.provider](this.options);
@@ -1840,6 +1840,13 @@ GMapsTorqueLayer.prototype = torque.extend({},
    */
   setKey: function(key) {
     this.setKeys([key]);
+  },
+
+  /**
+   * returns the array of keys being rendered
+   */
+  getKeys: function() {
+    return this.keys;
   },
 
   setKeys: function(keys) {
@@ -1982,6 +1989,21 @@ GMapsTorqueLayer.prototype = torque.extend({},
     }
     return null;
   },
+
+  /** return the number of points for a step */
+  pointCount: function(step) {
+    var t, tile;
+    step = step === undefined ? this.key: step;
+    var c = 0;
+    for(t in this._tiles) {
+      tile = this._tiles[t];
+      if (tile) {
+        c += tile.timeCount[step];
+      }
+    }
+    return c;
+  },
+  
   getValueForBBox: function(x, y, w, h) {
     var xf = x + w, yf = y + h;
     var sum = 0;
@@ -2122,7 +2144,9 @@ module.exports.GMapsTileLoader = gmaps.GMapsTileLoader;
 module.exports.GMapsTorqueLayer = gmaps.GMapsTorqueLayer;
 module.exports.GMapsTiledTorqueLayer = gmaps.GMapsTiledTorqueLayer;
 
-},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./provider":19,"./renderer":25,"./request":29}],12:[function(require,module,exports){
+require('./ol');
+
+},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":24,"./renderer":30,"./request":34}],12:[function(require,module,exports){
 require('./leaflet_tileloader_mixin');
 
 /**
@@ -2625,7 +2649,7 @@ L.TorqueLayer = L.CanvasLayer.extend({
       self.fire('change:steps', {
         steps: self.provider.getSteps()
       });
-      self.setKey(self.getKey());
+      self.setKeys(self.getKeys());
     };
 
     this.renderer.on("allIconsLoaded", this.render.bind(this));
@@ -2822,6 +2846,13 @@ L.TorqueLayer = L.CanvasLayer.extend({
     this.setKeys([key], options);
   },
 
+  /**
+   * returns the array of keys being rendered
+   */
+  getKeys: function() {
+    return this.keys;
+  },
+
   setKeys: function(keys, options) {
     this.keys = keys;
     this.animator.step(this.getKey());
@@ -3001,6 +3032,20 @@ L.TorqueLayer = L.CanvasLayer.extend({
     return sum;
   },
 
+  /** return the number of points for a step */
+  pointCount: function(step) {
+    var t, tile;
+    step = step === undefined ? this.key: step;
+    var c = 0;
+    for(t in this._tiles) {
+      tile = this._tiles[t];
+      if (tile) {
+        c += tile.timeCount[step];
+      }
+    }
+    return c;
+  },
+  
   invalidate: function() {
     this.provider.reload();
   },
@@ -3146,6 +3191,898 @@ MercatorProjection.prototype.latLonToTilePoint = function(lat, lon, tileX, tileY
 module.exports = MercatorProjection;
 
 },{}],18:[function(require,module,exports){
+require('./ol_tileloader_mixin');
+
+ol.CanvasLayer = function(options) {
+    this.root_ = goog.dom.createDom("DIV", {
+        class: "ol-heatmap-layer"
+    });
+
+    this.options = {
+        subdomains: 'abc',
+        errorTileUrl: '',
+        attribution: '',
+        zoomOffset: 0,
+        opacity: 1,
+        tileLoader: false, // installs tile loading events
+        zoomAnimation: true,
+        tileSize: 256
+    };
+
+    options = options || {};
+    goog.object.extend(this.options, options);
+
+    ol.TileLoader.call(this, this.options.tileSize);
+
+    this.render = this.render.bind(this);
+    this._canvas = this._createCanvas();
+
+    this.root_.appendChild(this._canvas);
+
+    // backCanvas for zoom animation
+    if (this.options.zoomAnimation) {
+        this._backCanvas = this._createCanvas();
+        this.root_.appendChild(this._backCanvas);
+        this._backCanvas.style.display = 'none';
+    }
+
+    this._ctx = this._canvas.getContext('2d');
+    this.currentAnimationFrame = -1;
+    this.requestAnimationFrame = window.requestAnimationFrame || window.mozRequestAnimationFrame ||
+    window.webkitRequestAnimationFrame || window.msRequestAnimationFrame || function (callback) {
+        return window.setTimeout(callback, 1000 / 60);
+    };
+    this.cancelAnimationFrame = window.cancelAnimationFrame || window.mozCancelAnimationFrame ||
+    window.webkitCancelAnimationFrame || window.msCancelAnimationFrame || function (id) {
+        clearTimeout(id);
+    };
+
+    if(options.map){
+        this.setMap(options.map);
+    }
+};
+
+ol.inherits(ol.CanvasLayer, ol.TileLoader);
+
+ol.CanvasLayer.prototype.setMap = function(map){
+    if(this._map){
+        //remove
+        this._map.unByKey(this.pointdragKey_);
+        this._map.unByKey(this.sizeChangedKey_);
+    }
+    this._map = map;
+
+
+    //TODO: there is pointerdrag event in OpenLayers. Maybe use it in later on
+    // hack: listen to predrag event launched by dragging to
+    // set container in position (0, 0) in screen coordinates
+    //map.dragging._draggable.on('predrag', function() {
+    //    var d = map.dragging._draggable;
+    //    L.DomUtil.setPosition(this._canvas, { x: -d._newPos.x, y: -d._newPos.y });
+    //}, this);
+
+    if(map){
+        var overlayContainer  = goog.dom.getElementByClass("ol-overlaycontainer", this._map.getViewport());
+        overlayContainer.appendChild(this.root_);
+
+        //map.on({ 'viewreset': this._reset }, this);
+        this.pointdragKey_ = map.on('pointerdrag', this.redraw, this);
+        this.centerChanged_ = map.getView().on("change:center", this._reposition, this);
+        this.sizeChangedKey_ = map.on('change:size', this._reset, this);
+
+        if (this.options.zoomAnimation) {
+            /*map.on({
+             'zoomanim': this._animateZoom,
+             'zoomend': this._endZoomAnim,
+             'moveend': this._reset
+             }, this); */
+
+            map.on("moveend", this._reset, this);
+        }
+
+        if(this.options.tileLoader) {
+            ol.TileLoader.prototype._initTileLoader.call(this, map);
+        }
+
+        this._reset();
+    }
+};
+
+ol.CanvasLayer.prototype._createCanvas = function() {
+    var canvas;
+    canvas = document.createElement('canvas');
+    canvas.style.position = 'absolute';
+    canvas.style.top = 0;
+    canvas.style.left = 0;
+    canvas.style.pointerEvents = "none";
+    canvas.style.zIndex = this.options.zIndex || 0;
+    return canvas;
+};
+
+ol.CanvasLayer.prototype._reset = function () {
+    this._resize();
+    //need to figure out position
+    this._reposition();
+};
+
+ol.CanvasLayer.prototype._resize =  function() {
+    var size = this._map.getSize();
+    var width = size[0];
+    var height = size[1];
+    var oldWidth = this._canvas.width;
+    var oldHeight = this._canvas.height;
+
+    // resizing may allocate a new back buffer, so do so conservatively
+    if (oldWidth !== width || oldHeight !== height) {
+        this._canvas.width = width;
+        this._canvas.height = height;
+        this._canvas.style.width = width + 'px';
+        this._canvas.style.height = height + 'px';
+        this.root_.style.width = width + 'px';
+        this.root_.style.height = height + 'px';
+        this._render();
+    }
+};
+
+ol.CanvasLayer.prototype._reposition = function(){
+    this._render();
+};
+
+ol.CanvasLayer.prototype._render = function() {
+    if (this.currentAnimationFrame >= 0) {
+        this.cancelAnimationFrame.call(window, this.currentAnimationFrame);
+    }
+    this.currentAnimationFrame = this.requestAnimationFrame.call(window, this.render);
+};
+
+ol.CanvasLayer.prototype.getCanvas = function() {
+        return this._canvas;
+};
+
+ol.CanvasLayer.prototype.getAttribution = function() {
+        return this.options.attribution;
+};
+
+ol.CanvasLayer.prototype.draw = function() {
+        return this._reset();
+};
+
+ol.CanvasLayer.prototype.redraw = function(direct) {
+    return this._render();
+};
+
+module.exports = ol.CanvasLayer;
+},{"./ol_tileloader_mixin":20}],19:[function(require,module,exports){
+if (typeof ol !== 'undefined') {
+    require('./torque');
+}
+
+},{"./torque":22}],20:[function(require,module,exports){
+var mapProjection = require("./projection.js");
+
+ol.TileLoader = function(tileSize){
+    this._tileSize = tileSize;
+    this._tiles = {};
+    this._tilesLoading = {};
+    this._tilesToLoad = 0;
+
+    this._mecratorProjection = ol.proj.getTransform("EPSG:3857", "EPSG:4326");
+    this._olProjection = ol.proj.getTransform("EPSG:4326", "EPSG:3857");
+    this._updateTiles = this._updateTiles.bind(this);
+};
+
+ol.TileLoader.prototype._initTileLoader = function(map) {
+    this._map = map;
+    this._view = map.getView();
+    this._centerChangedId = this._view.on("change:center", function(e){
+        this._updateTiles();
+    },  this);
+    this._resolutionChangedId = this._view.on("change:resolution", this._updateTiles);
+    this._updateTiles();
+};
+ol.TileLoader.prototype._removeTileLoader = function() {
+    this._view.unByKey(this._centerChangedId);
+    this._view.unByKey(this._resolutionChangedId );
+
+    this._removeTiles();
+};
+
+ol.TileLoader.prototype._removeTiles = function () {
+    for (var key in this._tiles) {
+        this._removeTile(key);
+    }
+};
+
+ol.TileLoader.prototype._reloadTiles = function() {
+    this._removeTiles();
+    this._updateTiles();
+};
+
+ol.TileLoader.prototype._updateTiles = function () {
+    if (!this._map) { return; }
+
+    var bounds = this._getExtent();
+
+    var zoom = this._view.getZoom();
+    var tileSize = this._tileSize;
+
+    var mapTopLeft = mapProjection.toMapPoint(bounds[3], bounds[0], zoom, tileSize);
+    var mapBottomRight =  mapProjection.toMapPoint(bounds[1], bounds[2], zoom, tileSize);
+
+    var nwTilePoint = {
+            x: Math.floor(mapTopLeft.x / tileSize),
+            y: Math.floor(mapTopLeft.y / tileSize)
+        },
+        seTilePoint = {
+            x:  Math.floor(mapBottomRight.x / tileSize),
+            y: Math.floor(mapBottomRight.y / tileSize)
+        };
+
+    this._addTilesFromCenterOut(nwTilePoint, seTilePoint, zoom);
+    this._removeOtherTiles(nwTilePoint, seTilePoint);
+};
+
+ol.TileLoader.prototype._removeOtherTiles = function(nwTilePoint, seTilePoint) {
+    var kArr, x, y, key;
+    var zoom = this._view.getZoom();
+
+    for (key in this._tiles) {
+        if (this._tiles.hasOwnProperty(key)) {
+            kArr = key.split(':');
+            x = parseInt(kArr[0], 10);
+            y = parseInt(kArr[1], 10);
+            z = parseInt(kArr[2], 10);
+
+            // remove tile if it's out of bounds
+            if (z !== zoom || x < nwTilePoint.x|| x > seTilePoint.x || y < nwTilePoint.y || y > seTilePoint.y) {
+                this._removeTile(key);
+            }
+        }
+    }
+};
+
+ol.TileLoader.prototype._getExtent  = function()
+{
+    var view = this._map.getView();
+    var extent = this._mecratorProjection(view.calculateExtent(this._map.getSize()));
+    if (Math.abs(extent[0] - extent[2]) >= 360) {
+        extent[0] = mapProjection.earthBounding.west;
+        extent[2] = mapProjection.earthBounding.east;
+    }
+    else {
+        if(extent[0] >= -180 && extent[2] <=180) {
+            return extent;
+        }
+        var center = ol.extent.getCenter(extent);
+        var width = ol.extent.getWidth(extent);
+
+        center[0] = this._normalizeLongitude(center[0]);
+
+        extent[0] = center[0] - width /2;
+        extent[2] = center[1] + width /2;
+
+        if(extent[0] < mapProjection.earthBounding.west)
+            extent[0] = mapProjection.earthBounding.west;
+
+        if(extent[1] > mapProjection.earthBounding.east)
+            extent[1] = mapProjection.earthBounding.east;
+    }
+
+    return extent;
+};
+
+ol.TileLoader.prototype._removeTile = function (key) {
+    this.fire('tileRemoved', this._tiles[key]);
+    delete this._tiles[key];
+    delete this._tilesLoading[key];
+};
+
+ol.TileLoader.prototype._tileKey = function(tilePoint) {
+    return tilePoint.x + ':' + tilePoint.y + ':' + tilePoint.zoom;
+};
+
+ol.TileLoader.prototype._tileShouldBeLoaded = function (tilePoint) {
+    var k = this._tileKey(tilePoint);
+    return !(k in this._tiles) && !(k in this._tilesLoading);
+};
+
+ol.TileLoader.prototype._tileLoaded = function(tilePoint, tileData) {
+        this._tilesToLoad--;
+        var k = this._tileKey(tilePoint);
+        this._tiles[k] = tileData;
+        delete this._tilesLoading[k];
+        if(this._tilesToLoad === 0) {
+            this.fire("tilesLoaded");
+        }
+};
+
+ol.TileLoader.prototype._normalizeLongitude = function(lon) {
+    while (lon < -180 ) lon += 360;
+    while (lon > 180) lon -= 360;
+    return lon;
+};
+
+ol.TileLoader.prototype.getTilePos = function (tilePoint) {
+    var zoom = this._view.getZoom();
+    tilePoint = {
+        x: tilePoint.x * this._tileSize,
+        y: tilePoint.y * this._tileSize
+    };
+
+
+    var extent = this._mecratorProjection(this._view.calculateExtent(this._map.getSize()));
+    var bounds = this._getExtent();
+    var topLeft = this._getTopLeftInPixels();
+
+    var offsetX = 0, offsetY = 0;
+
+    if(topLeft[0] > 0) offsetX = topLeft[0];
+    if(topLeft[1] > 0) offsetY = topLeft[1];
+
+    var divTopLeft = mapProjection.toMapPoint(bounds[3], bounds[0], zoom, this._tileSize);
+
+    return {
+        x: offsetX + tilePoint.x - divTopLeft.x,
+        y: offsetY + tilePoint.y - divTopLeft.y
+    };
+};
+
+ol.TileLoader.prototype._getTopLeftInPixels = function(){
+    var center = this._mecratorProjection(this._view.getCenter());
+    var w = Math.floor(Math.abs(center[0]) / 180);
+
+    if(w == 0){
+        return this._map.getPixelFromCoordinate(this._olProjection([mapProjection.earthBounding.west,
+           mapProjection.earthBounding.north]));
+    }
+    else{
+        var normLon = this._normalizeLongitude(center[0]);
+        var diff = normLon > 0 ? 180 + normLon : 180 - Math.abs(normLon);
+        return this._map.getPixelFromCoordinate(this._olProjection([center[0] - diff,
+            mapProjection.earthBounding.north]));
+    }
+};
+
+ol.TileLoader.prototype._addTilesFromCenterOut = function (nwTilePoint, seTilePoint, zoom) {
+        var queue = [],
+            center = {
+                x: (nwTilePoint.x + seTilePoint.x) * 0.5,
+                y: (nwTilePoint.y + seTilePoint.y) * 0.5
+            };
+
+        var j, i, point;
+
+        for (j = nwTilePoint.y; j <= seTilePoint.y; j++) {
+            for (i = nwTilePoint.x; i <= seTilePoint.x; i++) {
+                point = {
+                    x: i,
+                    y: j,
+                    zoom: zoom
+                };
+
+                if (this._tileShouldBeLoaded(point)) {
+                    queue.push(point);
+                }
+            }
+        }
+
+        var tilesToLoad = queue.length;
+
+        if (tilesToLoad === 0) { return; }
+
+        function distanceToCenterSq(point) {
+            var dx = point.x - center.x;
+            var dy = point.y - center.y;
+            return dx * dx + dy * dy;
+        }
+
+        // load tiles in order of their distance to center
+        queue.sort(function (a, b) {
+            return distanceToCenterSq(a) - distanceToCenterSq(b);
+        });
+
+        this._tilesToLoad += tilesToLoad;
+
+        for (i = 0; i < tilesToLoad; i++) {
+            var t = queue[i];
+            var k = this._tileKey(t);
+            this._tilesLoading[k] = t;
+            // events
+            this.fire('tileAdded', t);
+        }
+
+        this.fire("tilesLoading");
+    };
+
+module.exports = ol.TileLoader;
+
+},{"./projection.js":21}],21:[function(require,module,exports){
+
+module.exports = {
+    earthBounding :
+    {
+        north : 85.05112878,
+        west: -180,
+        south : -85.05112878,
+        east: 180
+    },
+    clip: function(number, min, max){
+        return Math.min(Math.max(number, min), max);
+    },
+    getMapSize: function(zoom, tileSize){
+      return Math.pow(2.0, zoom) * tileSize;
+    },
+    toMapPoint: function(lat, long, zoom, tileSize){
+        lat = this.clip(lat, this.earthBounding.south, this.earthBounding.north);
+        long = this.clip(long, this.earthBounding.west, this.earthBounding.east);
+        var x = (long + 180.0) / 360.0;
+        var sinLat = Math.sin(lat * Math.PI / 180.0);
+        var y = 0.5 - Math.log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * Math.PI);
+
+        var mapSize = this.getMapSize(zoom, tileSize);
+
+        var pointX = this.clip(x * mapSize + 0.5, 0.0, mapSize - 1.0);
+        var pointY = this.clip(y * mapSize + 0.5, 0.0, mapSize - 1.0);
+
+        return {
+            x: Math.floor(pointX),
+            y: Math.floor(pointY),
+                zoom: zoom
+        };
+    }
+};
+
+},{}],22:[function(require,module,exports){
+(function (global){
+var carto = global.carto || require('carto');
+var torque = require('../');
+require('./canvas_layer');
+
+ol.TorqueLayer = function(options){
+    var self = this;
+    if (!torque.isBrowserSupported()) {
+        throw new Error("browser is not supported by torque");
+    }
+    options.tileLoader = true;
+    this.keys = [0];
+    Object.defineProperty(this, 'key', {
+        get: function() {
+            return this.getKey();
+        }
+    });
+    this.prevRenderedKey = 0;
+    if (options.cartocss) {
+        torque.extend(options, torque.common.TorqueLayer.optionsFromCartoCSS(options.cartocss));
+    }
+
+    options.resolution = options.resolution || 2;
+    options.steps = options.steps || 100;
+    options.visible = options.visible === undefined ? true: options.visible;
+    this.hidden = !options.visible;
+
+    this.animator = new torque.Animator(function(time) {
+        var k = time | 0;
+        if(self.getKey() !== k) {
+            self.setKey(k, { direct: true });
+        }
+    }, torque.extend(torque.clone(options), {
+        onPause: function() {
+            self.fire('pause');
+        },
+        onStop: function() {
+            self.fire('stop');
+        },
+        onStart: function() {
+            self.fire('play');
+        },
+        onStepsRange: function() {
+            self.fire('change:stepsRange', self.animator.stepsRange());
+        }
+    }));
+
+    this.play = this.animator.start.bind(this.animator);
+    this.stop = this.animator.stop.bind(this.animator);
+    this.pause = this.animator.pause.bind(this.animator);
+    this.toggle = this.animator.toggle.bind(this.animator);
+    this.setDuration = this.animator.duration.bind(this.animator);
+    this.isRunning = this.animator.isRunning.bind(this.animator);
+
+
+    ol.CanvasLayer.call(this, options);
+
+    this.options.renderer = this.options.renderer || 'point';
+    this.options.provider = this.options.provider || 'windshaft';
+
+    if (this.options.tileJSON) this.options.provider = 'tileJSON';
+
+    this.provider = new this.providers[this.options.provider](options);
+    this.renderer = new this.renderers[this.options.renderer](this.getCanvas(), options);
+
+    options.ready = function() {
+        self.fire("change:bounds", {
+            bounds: self.provider.getBounds()
+        });
+        self.animator.steps(self.provider.getSteps());
+        self.animator.rescale();
+        self.fire('change:steps', {
+            steps: self.provider.getSteps()
+        });
+        self.setKeys(self.getKeys());
+    };
+
+    this.renderer.on("allIconsLoaded", this.render.bind(this));
+
+
+    // for each tile shown on the map request the data
+    this.on('tileAdded', function(t) {
+        var tileData = this.provider.getTileData(t, t.zoom, function(tileData) {
+            // don't load tiles that are not being shown
+            if (t.zoom !== self._map.getView().getZoom()) return;
+            self._tileLoaded(t, tileData);
+            self._clearTileCaches();
+            if (tileData) {
+                self.redraw();
+            }
+            self.fire('tileLoaded');
+        });
+    }, this);
+};
+
+ol.TorqueLayer.prototype = torque.extend({},
+    ol.CanvasLayer.prototype,
+    torque.Event,
+    {
+    providers: {
+        'sql_api': torque.providers.json,
+        'url_template': torque.providers.JsonArray,
+        'windshaft': torque.providers.windshaft,
+        'tileJSON': torque.providers.tileJSON
+    },
+
+    renderers: {
+        'point': torque.renderer.Point,
+        'pixel': torque.renderer.Rectangle
+    },
+
+    onAdd: function(map)
+    {
+        ol.CanvasLayer.prototype.setMap.call(this, map);
+    },
+
+    _clearTileCaches: function() {
+        var t, tile;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            if (tile && tile._tileCache) {
+                tile._tileCache = null;
+            }
+        }
+    },
+
+    _clearCaches: function() {
+        this.renderer && this.renderer.clearSpriteCache();
+        this._clearTileCaches();
+    },
+
+    _pauseOnZoom: function() {
+        this.wasRunning = this.isRunning();
+        if (this.wasRunning) {
+            this.pause();
+        }
+    },
+
+    _resumeOnZoom: function() {
+        if (this.wasRunning) {
+            this.play();
+        }
+    },
+
+    hide: function() {
+        if(this.hidden) return this;
+        this.pause();
+        this.clear();
+        this.hidden = true;
+        return this;
+    },
+
+    show: function() {
+        if(!this.hidden) return this;
+        this.hidden = false;
+        this.play();
+        if (this.options.steps === 1){
+            this.redraw();
+        }
+        return this;
+    },
+
+    setSQL: function(sql) {
+        if (this.provider.options.named_map) throw new Error("SQL queries on named maps are read-only");
+        if (!this.provider || !this.provider.setSQL) {
+            throw new Error("this provider does not support SQL");
+        }
+        this.provider.setSQL(sql);
+        this._reloadTiles();
+        return this;
+    },
+
+    setBlendMode: function(_) {
+        this.renderer.setBlendMode(_);
+        this.redraw();
+    },
+
+    setSteps: function(steps) {
+        this.provider.setSteps(steps);
+        this._reloadTiles();
+    },
+
+    setColumn: function(column, isTime) {
+        this.provider.setColumn(column, isTime);
+        this._reloadTiles();
+    },
+
+    getTimeBounds: function() {
+        return this.provider && this.provider.getKeySpan();
+    },
+
+    clear: function() {
+        var canvas = this.getCanvas();
+        canvas.width = canvas.width;
+    },
+
+    /**
+     * render the selectef key
+     * don't call this function directly, it's called by
+     * requestAnimationFrame. Use redraw to refresh it
+     */
+    render: function() {
+        if(this.hidden) return;
+        var t, tile, pos;
+        var canvas = this.getCanvas();
+        this.renderer.clearCanvas();
+        var ctx = canvas.getContext('2d');
+
+        // renders only a "frame"
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            if (tile) {
+                pos = this.getTilePos(tile.coord);
+                ctx.setTransform(1, 0, 0, 1, pos.x, pos.y);
+                this.renderer.renderTile(tile, this.keys);
+            }
+        }
+        this.renderer.applyFilters();
+    },
+
+    /**
+     * set key to be shown. If it's a single value
+     * it renders directly, if it's an array it renders
+     * accumulated
+     */
+    setKey: function(key, options) {
+        this.setKeys([key], options);
+    },
+
+    /**
+     * returns the array of keys being rendered
+     */
+    getKeys: function() {
+        return this.keys;
+    },
+
+    setKeys: function(keys, options) {
+        this.keys = keys;
+        this.animator.step(this.getKey());
+        this._clearTileCaches();
+        this.redraw(options && options.direct);
+        this.fire('change:time', {
+            time: this.getTime(),
+            step: this.getKey(),
+            start: this.getKey(),
+            end: this.getLastKey()
+        });
+    },
+
+    getKey: function() {
+        return this.keys[0];
+    },
+
+    getLastKey: function() {
+        return this.keys[this.keys.length - 1];
+    },
+
+    /**
+     * helper function, does the same than ``setKey`` but only
+     * accepts scalars.
+     */
+    setStep: function(time) {
+        if(time === undefined || time.length !== undefined) {
+            throw new Error("setTime only accept scalars");
+        }
+        this.setKey(time);
+    },
+
+    renderRange: function(start, end) {
+        this.pause();
+        var keys = [];
+        for (var i = start; i <= end; i++) {
+            keys.push(i);
+        }
+        this.setKeys(keys);
+    },
+
+    resetRenderRange: function() {
+        this.stop();
+        this.play();
+    },
+
+    /**
+     * transform from animation step to Date object
+     * that contains the animation time
+     *
+     * ``step`` should be between 0 and ``steps - 1``
+     */
+    stepToTime: function(step) {
+        var times = this.provider.getKeySpan();
+        var time = times.start + (times.end - times.start)*(step/this.provider.getSteps());
+        return new Date(time);
+    },
+
+    timeToStep: function(timestamp) {
+        if (typeof timestamp === "Date") timestamp = timestamp.getTime();
+        if (!this.provider) return 0;
+        var times = this.provider.getKeySpan();
+        var step = (this.provider.getSteps() * (timestamp - times.start)) / (times.end - times.start);
+        return step;
+    },
+
+    getStep: function() {
+        return this.getKey();
+    },
+
+    /**
+     * returns the animation time defined by the data
+     * in the defined column. Date object
+     */
+    getTime: function() {
+        return this.stepToTime(this.getKey());
+    },
+
+    /**
+     * returns an object with the start and end times
+     */
+    getTimeSpan: function() {
+        return this.provider.getKeySpan();
+    },
+
+    /**
+     * set the cartocss for the current renderer
+     */
+    setCartoCSS: function(cartocss) {
+        if (this.provider.options.named_map) throw new Error("CartoCSS style on named maps is read-only");
+        if (!this.renderer) throw new Error('renderer is not valid');
+        var shader = new carto.RendererJS().render(cartocss);
+        this.renderer.setShader(shader);
+
+        // provider options
+        var options = torque.common.TorqueLayer.optionsFromLayer(shader.findLayer({ name: 'Map' }));
+        this.provider.setCartoCSS && this.provider.setCartoCSS(cartocss);
+        if(this.provider.setOptions(options)) {
+            this._reloadTiles();
+        }
+
+        torque.extend(this.options, options);
+
+        // animator options
+        if (options.animationDuration) {
+            this.animator.duration(options.animationDuration);
+        }
+        this._clearCaches();
+        this.redraw();
+        return this;
+    },
+
+    /**
+     * get active points for a step in active zoom
+     * returns a list of bounding boxes [[] , [], []]
+     * empty list if there is no active pixels
+     */
+    getActivePointsBBox: function(step) {
+        var positions = [];
+        for(var t in this._tiles) {
+            var tile = this._tiles[t];
+            positions = positions.concat(this.renderer.getActivePointsBBox(tile, step));
+        }
+        return positions;
+    },
+
+    /**
+     * return an array with the values for all the pixels active for the step
+     */
+    getValues: function(step) {
+        var values = [];
+        step = step === undefined ? this.getKey(): step;
+        var t, tile;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            this.renderer.getValues(tile, step, values);
+        }
+        return values;
+    },
+
+    /**
+     * return the value for position relative to map coordinates. null for no value
+     */
+    getValueForPos: function(x, y, step) {
+        step = step === undefined ? this.getKey(): step;
+        var t, tile, pos, value = null, xx, yy;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            pos = this.getTilePos(tile.coord);
+            xx = x - pos.x;
+            yy = y - pos.y;
+            if (xx >= 0 && yy >= 0 && xx < this.renderer.TILE_SIZE && yy <= this.renderer.TILE_SIZE) {
+                value = this.renderer.getValueFor(tile, step, xx, yy);
+            }
+            if (value !== null) {
+                return value;
+            }
+        }
+        return null;
+    },
+
+    getValueForBBox: function(x, y, w, h) {
+        var xf = x + w, yf = y + h, _x=x;
+        var sum = 0;
+        for(_y = y; _y<yf; _y+=this.options.resolution){
+            for(_x = x; _x<xf; _x+=this.options.resolution){
+                var thisValue = this.getValueForPos(_x,_y);
+                if (thisValue){
+                    var bb = thisValue.bbox;
+                    var xy = this._map.latLngToContainerPoint([bb[1].lat, bb[1].lon]);
+                    if(xy.x < xf && xy.y < yf){
+                        sum += thisValue.value;
+                    }
+                }
+            }
+        }
+        return sum;
+    },
+
+    /** return the number of points for a step */
+    pointCount: function(step) {
+        var t, tile;
+        step = step === undefined ? this.key: step;
+        var c = 0;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            if (tile) {
+                c += tile.timeCount[step];
+            }
+        }
+        return c;
+    },
+
+    invalidate: function() {
+        this.provider.reload();
+    },
+
+    setStepsRange: function(start, end) {
+        this.animator.stepsRange(start, end);
+    },
+
+    removeStepsRange: function() {
+        this.animator.removeCustomStepsRange();
+    },
+
+    getStepsRange: function() {
+        return this.animator.stepsRange();
+    }
+});
+
+
+module.exports = ol.TorqueLayer;
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"../":11,"./canvas_layer":18,"carto":undefined}],23:[function(require,module,exports){
 /*
 # metrics profiler
 
@@ -3289,7 +4226,7 @@ Profiler.metric = function(name) {
 
 module.exports = Profiler;
 
-},{}],19:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 module.exports = {
     json: require('./json'),
     JsonArray: require('./jsonarray'),
@@ -3297,7 +4234,7 @@ module.exports = {
     tileJSON: require('./tilejson')
 };
 
-},{"./json":20,"./jsonarray":21,"./tilejson":22,"./windshaft":23}],20:[function(require,module,exports){
+},{"./json":25,"./jsonarray":26,"./tilejson":27,"./windshaft":28}],25:[function(require,module,exports){
 var torque = require('../');
 var Profiler = require('../profiler');
 
@@ -3876,7 +4813,7 @@ var Profiler = require('../profiler');
 
 module.exports = json;
 
-},{"../":11,"../profiler":18}],21:[function(require,module,exports){
+},{"../":11,"../profiler":23}],26:[function(require,module,exports){
 var torque = require('../');
 var Profiler = require('../profiler');
 
@@ -4106,7 +5043,7 @@ var Profiler = require('../profiler');
 
   module.exports = json;
 
-},{"../":11,"../profiler":18}],22:[function(require,module,exports){
+},{"../":11,"../profiler":23}],27:[function(require,module,exports){
   var torque = require('../');
 
   var Uint8Array = torque.types.Uint8Array;
@@ -4446,7 +5383,7 @@ var Profiler = require('../profiler');
   };
 
   module.exports = tileJSON;
-},{"../":11}],23:[function(require,module,exports){
+},{"../":11}],28:[function(require,module,exports){
   var torque = require('../');
   var Profiler = require('../profiler');
 
@@ -4936,7 +5873,7 @@ var Profiler = require('../profiler');
 
   module.exports = windshaft;
 
-},{"../":11,"../profiler":18}],24:[function(require,module,exports){
+},{"../":11,"../profiler":23}],29:[function(require,module,exports){
   var TAU = Math.PI*2;
   // min value to render a line. 
   // it does not make sense to render a line of a width is not even visible
@@ -5029,13 +5966,13 @@ module.exports = {
     MAX_SPRITE_RADIUS: MAX_SPRITE_RADIUS
 };
 
-},{}],25:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 module.exports = {
     cartocss: require('./cartocss_render'),
     Point: require('./point'),
     Rectangle: require('./rectangle')
 };
-},{"./cartocss_render":24,"./point":26,"./rectangle":27}],26:[function(require,module,exports){
+},{"./cartocss_render":29,"./point":31,"./rectangle":32}],31:[function(require,module,exports){
 (function (global){
 var torque = require('../');
 var cartocss = require('./cartocss_render');
@@ -5059,18 +5996,34 @@ var Filters = require('./torque_filters');
   ].join('\n');
 
   var COMP_OP_TO_CANVAS = {
+    "difference": "difference",
     "src": 'source-over',
+    "exclusion": "exclusion",
+    "dst": "destination-in",
+    "multiply": "multiply",
+    "contrast": "contrast",
     "src-over": 'source-over',
+    "screen": "screen",
+    "invert": "invert",
     "dst-over": 'destination-over',
+    "overlay": "overlay",
+    "invert-rgb": "invert",
     "src-in": 'source-in',
-    "dst-in": 'destination-in',
-    "src-out": 'source-out',
-    "dst-out": 'destination-out',
-    "src-atop": 'source-atop',
-    "dst-atop": 'destination-atop',
-    "xor": 'xor',
     "darken": 'darken',
-    "lighten": 'lighten'
+    "dst-in": 'destination-in',
+    "lighten": 'lighten',
+    "src-out": 'source-out',
+    "color-dodge": "color-dodge",
+    "hue":"hue",
+    "dst-out": 'destination-out',
+    "color-burn":"color-burn",
+    "saturation":"saturation",
+    "src-atop": 'source-atop',
+    "hard-light":"hard-light",
+    "color":"color",
+    "dst-atop": 'destination-atop',
+    "soft-light":"soft-light",
+    "xor": 'xor'
   }
 
   function compop2canvas(compop) {
@@ -5112,7 +6065,7 @@ var Filters = require('./torque_filters');
         var ctx = this._ctx;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         var compop = this._Map['comp-op']
-        ctx.globalCompositeOperation = compop2canvas(compop);
+        ctx.globalCompositeOperation = compop2canvas(compop) || compop;
         ctx.fillStyle = color;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
@@ -5511,7 +6464,7 @@ var Filters = require('./torque_filters');
 module.exports = PointRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"../profiler":18,"./cartocss_render":24,"./torque_filters":28,"carto":undefined}],27:[function(require,module,exports){
+},{"../":11,"../profiler":23,"./cartocss_render":29,"./torque_filters":33,"carto":undefined}],32:[function(require,module,exports){
 (function (global){
 var carto = global.carto || require('carto');
 
@@ -5675,7 +6628,7 @@ var carto = global.carto || require('carto');
 module.exports = RectanbleRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"carto":undefined}],28:[function(require,module,exports){
+},{"carto":undefined}],33:[function(require,module,exports){
 /*
  Based on simpleheat, a tiny JavaScript library for drawing heatmaps with Canvas, 
  by Vladimir Agafonkin
@@ -5767,7 +6720,7 @@ torque_filters.prototype = {
 
 module.exports = torque_filters;
 
-},{}],29:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 (function (global){
 var torque = require('./core');
 

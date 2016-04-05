@@ -656,7 +656,7 @@ TorqueLayer.optionsFromCartoCSS = function(cartocss) {
 module.exports.TorqueLayer = TorqueLayer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"carto":38}],5:[function(require,module,exports){
+},{"carto":43}],5:[function(require,module,exports){
 (function (global){
   var Event = {};
   Event.on = function(evt, callback) {
@@ -1277,7 +1277,7 @@ CanvasLayer.prototype.scheduleUpdate = function() {
 module.exports = CanvasLayer;
 
 },{}],7:[function(require,module,exports){
-/*
+    /*
  ====================
  canvas setup for drawing tiles
  ====================
@@ -1701,7 +1701,7 @@ GMapsTorqueLayer.prototype = torque.extend({},
       self.fire('change:steps', {
         steps: self.provider.getSteps()
       });
-      self.setKey(self.getKey());
+      self.setKeys(self.getKeys());
     };
 
     this.provider = new this.providers[this.options.provider](this.options);
@@ -1833,6 +1833,13 @@ GMapsTorqueLayer.prototype = torque.extend({},
    */
   setKey: function(key) {
     this.setKeys([key]);
+  },
+
+  /**
+   * returns the array of keys being rendered
+   */
+  getKeys: function() {
+    return this.keys;
   },
 
   setKeys: function(keys) {
@@ -1975,6 +1982,21 @@ GMapsTorqueLayer.prototype = torque.extend({},
     }
     return null;
   },
+
+  /** return the number of points for a step */
+  pointCount: function(step) {
+    var t, tile;
+    step = step === undefined ? this.key: step;
+    var c = 0;
+    for(t in this._tiles) {
+      tile = this._tiles[t];
+      if (tile) {
+        c += tile.timeCount[step];
+      }
+    }
+    return c;
+  },
+  
   getValueForBBox: function(x, y, w, h) {
     var xf = x + w, yf = y + h;
     var sum = 0;
@@ -2096,7 +2118,7 @@ module.exports = {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"./CanvasLayer":6,"./canvas_tile_layer":7,"./gmaps_tileloader_mixin":8,"carto":38}],11:[function(require,module,exports){
+},{"../":11,"./CanvasLayer":6,"./canvas_tile_layer":7,"./gmaps_tileloader_mixin":8,"carto":43}],11:[function(require,module,exports){
 module.exports = require('./core');
 
 module.exports.Animator = require('./animator');
@@ -2115,7 +2137,9 @@ module.exports.GMapsTileLoader = gmaps.GMapsTileLoader;
 module.exports.GMapsTorqueLayer = gmaps.GMapsTorqueLayer;
 module.exports.GMapsTiledTorqueLayer = gmaps.GMapsTiledTorqueLayer;
 
-},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./provider":19,"./renderer":25,"./request":29}],12:[function(require,module,exports){
+require('./ol');
+
+},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":24,"./renderer":30,"./request":34}],12:[function(require,module,exports){
 require('./leaflet_tileloader_mixin');
 
 /**
@@ -2618,7 +2642,7 @@ L.TorqueLayer = L.CanvasLayer.extend({
       self.fire('change:steps', {
         steps: self.provider.getSteps()
       });
-      self.setKey(self.getKey());
+      self.setKeys(self.getKeys());
     };
 
     this.renderer.on("allIconsLoaded", this.render.bind(this));
@@ -2815,6 +2839,13 @@ L.TorqueLayer = L.CanvasLayer.extend({
     this.setKeys([key], options);
   },
 
+  /**
+   * returns the array of keys being rendered
+   */
+  getKeys: function() {
+    return this.keys;
+  },
+
   setKeys: function(keys, options) {
     this.keys = keys;
     this.animator.step(this.getKey());
@@ -2994,6 +3025,20 @@ L.TorqueLayer = L.CanvasLayer.extend({
     return sum;
   },
 
+  /** return the number of points for a step */
+  pointCount: function(step) {
+    var t, tile;
+    step = step === undefined ? this.key: step;
+    var c = 0;
+    for(t in this._tiles) {
+      tile = this._tiles[t];
+      if (tile) {
+        c += tile.timeCount[step];
+      }
+    }
+    return c;
+  },
+  
   invalidate: function() {
     this.provider.reload();
   },
@@ -3012,7 +3057,7 @@ L.TorqueLayer = L.CanvasLayer.extend({
 });
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"./canvas_layer":12,"carto":38}],16:[function(require,module,exports){
+},{"../":11,"./canvas_layer":12,"carto":43}],16:[function(require,module,exports){
   function clamp(a, b) {
     return function(t) {
       return Math.max(Math.min(t, b), a);
@@ -3139,6 +3184,898 @@ MercatorProjection.prototype.latLonToTilePoint = function(lat, lon, tileX, tileY
 module.exports = MercatorProjection;
 
 },{}],18:[function(require,module,exports){
+require('./ol_tileloader_mixin');
+
+ol.CanvasLayer = function(options) {
+    this.root_ = goog.dom.createDom("DIV", {
+        class: "ol-heatmap-layer"
+    });
+
+    this.options = {
+        subdomains: 'abc',
+        errorTileUrl: '',
+        attribution: '',
+        zoomOffset: 0,
+        opacity: 1,
+        tileLoader: false, // installs tile loading events
+        zoomAnimation: true,
+        tileSize: 256
+    };
+
+    options = options || {};
+    goog.object.extend(this.options, options);
+
+    ol.TileLoader.call(this, this.options.tileSize);
+
+    this.render = this.render.bind(this);
+    this._canvas = this._createCanvas();
+
+    this.root_.appendChild(this._canvas);
+
+    // backCanvas for zoom animation
+    if (this.options.zoomAnimation) {
+        this._backCanvas = this._createCanvas();
+        this.root_.appendChild(this._backCanvas);
+        this._backCanvas.style.display = 'none';
+    }
+
+    this._ctx = this._canvas.getContext('2d');
+    this.currentAnimationFrame = -1;
+    this.requestAnimationFrame = window.requestAnimationFrame || window.mozRequestAnimationFrame ||
+    window.webkitRequestAnimationFrame || window.msRequestAnimationFrame || function (callback) {
+        return window.setTimeout(callback, 1000 / 60);
+    };
+    this.cancelAnimationFrame = window.cancelAnimationFrame || window.mozCancelAnimationFrame ||
+    window.webkitCancelAnimationFrame || window.msCancelAnimationFrame || function (id) {
+        clearTimeout(id);
+    };
+
+    if(options.map){
+        this.setMap(options.map);
+    }
+};
+
+ol.inherits(ol.CanvasLayer, ol.TileLoader);
+
+ol.CanvasLayer.prototype.setMap = function(map){
+    if(this._map){
+        //remove
+        this._map.unByKey(this.pointdragKey_);
+        this._map.unByKey(this.sizeChangedKey_);
+    }
+    this._map = map;
+
+
+    //TODO: there is pointerdrag event in OpenLayers. Maybe use it in later on
+    // hack: listen to predrag event launched by dragging to
+    // set container in position (0, 0) in screen coordinates
+    //map.dragging._draggable.on('predrag', function() {
+    //    var d = map.dragging._draggable;
+    //    L.DomUtil.setPosition(this._canvas, { x: -d._newPos.x, y: -d._newPos.y });
+    //}, this);
+
+    if(map){
+        var overlayContainer  = goog.dom.getElementByClass("ol-overlaycontainer", this._map.getViewport());
+        overlayContainer.appendChild(this.root_);
+
+        //map.on({ 'viewreset': this._reset }, this);
+        this.pointdragKey_ = map.on('pointerdrag', this.redraw, this);
+        this.centerChanged_ = map.getView().on("change:center", this._reposition, this);
+        this.sizeChangedKey_ = map.on('change:size', this._reset, this);
+
+        if (this.options.zoomAnimation) {
+            /*map.on({
+             'zoomanim': this._animateZoom,
+             'zoomend': this._endZoomAnim,
+             'moveend': this._reset
+             }, this); */
+
+            map.on("moveend", this._reset, this);
+        }
+
+        if(this.options.tileLoader) {
+            ol.TileLoader.prototype._initTileLoader.call(this, map);
+        }
+
+        this._reset();
+    }
+};
+
+ol.CanvasLayer.prototype._createCanvas = function() {
+    var canvas;
+    canvas = document.createElement('canvas');
+    canvas.style.position = 'absolute';
+    canvas.style.top = 0;
+    canvas.style.left = 0;
+    canvas.style.pointerEvents = "none";
+    canvas.style.zIndex = this.options.zIndex || 0;
+    return canvas;
+};
+
+ol.CanvasLayer.prototype._reset = function () {
+    this._resize();
+    //need to figure out position
+    this._reposition();
+};
+
+ol.CanvasLayer.prototype._resize =  function() {
+    var size = this._map.getSize();
+    var width = size[0];
+    var height = size[1];
+    var oldWidth = this._canvas.width;
+    var oldHeight = this._canvas.height;
+
+    // resizing may allocate a new back buffer, so do so conservatively
+    if (oldWidth !== width || oldHeight !== height) {
+        this._canvas.width = width;
+        this._canvas.height = height;
+        this._canvas.style.width = width + 'px';
+        this._canvas.style.height = height + 'px';
+        this.root_.style.width = width + 'px';
+        this.root_.style.height = height + 'px';
+        this._render();
+    }
+};
+
+ol.CanvasLayer.prototype._reposition = function(){
+    this._render();
+};
+
+ol.CanvasLayer.prototype._render = function() {
+    if (this.currentAnimationFrame >= 0) {
+        this.cancelAnimationFrame.call(window, this.currentAnimationFrame);
+    }
+    this.currentAnimationFrame = this.requestAnimationFrame.call(window, this.render);
+};
+
+ol.CanvasLayer.prototype.getCanvas = function() {
+        return this._canvas;
+};
+
+ol.CanvasLayer.prototype.getAttribution = function() {
+        return this.options.attribution;
+};
+
+ol.CanvasLayer.prototype.draw = function() {
+        return this._reset();
+};
+
+ol.CanvasLayer.prototype.redraw = function(direct) {
+    return this._render();
+};
+
+module.exports = ol.CanvasLayer;
+},{"./ol_tileloader_mixin":20}],19:[function(require,module,exports){
+if (typeof ol !== 'undefined') {
+    require('./torque');
+}
+
+},{"./torque":22}],20:[function(require,module,exports){
+var mapProjection = require("./projection.js");
+
+ol.TileLoader = function(tileSize){
+    this._tileSize = tileSize;
+    this._tiles = {};
+    this._tilesLoading = {};
+    this._tilesToLoad = 0;
+
+    this._mecratorProjection = ol.proj.getTransform("EPSG:3857", "EPSG:4326");
+    this._olProjection = ol.proj.getTransform("EPSG:4326", "EPSG:3857");
+    this._updateTiles = this._updateTiles.bind(this);
+};
+
+ol.TileLoader.prototype._initTileLoader = function(map) {
+    this._map = map;
+    this._view = map.getView();
+    this._centerChangedId = this._view.on("change:center", function(e){
+        this._updateTiles();
+    },  this);
+    this._resolutionChangedId = this._view.on("change:resolution", this._updateTiles);
+    this._updateTiles();
+};
+ol.TileLoader.prototype._removeTileLoader = function() {
+    this._view.unByKey(this._centerChangedId);
+    this._view.unByKey(this._resolutionChangedId );
+
+    this._removeTiles();
+};
+
+ol.TileLoader.prototype._removeTiles = function () {
+    for (var key in this._tiles) {
+        this._removeTile(key);
+    }
+};
+
+ol.TileLoader.prototype._reloadTiles = function() {
+    this._removeTiles();
+    this._updateTiles();
+};
+
+ol.TileLoader.prototype._updateTiles = function () {
+    if (!this._map) { return; }
+
+    var bounds = this._getExtent();
+
+    var zoom = this._view.getZoom();
+    var tileSize = this._tileSize;
+
+    var mapTopLeft = mapProjection.toMapPoint(bounds[3], bounds[0], zoom, tileSize);
+    var mapBottomRight =  mapProjection.toMapPoint(bounds[1], bounds[2], zoom, tileSize);
+
+    var nwTilePoint = {
+            x: Math.floor(mapTopLeft.x / tileSize),
+            y: Math.floor(mapTopLeft.y / tileSize)
+        },
+        seTilePoint = {
+            x:  Math.floor(mapBottomRight.x / tileSize),
+            y: Math.floor(mapBottomRight.y / tileSize)
+        };
+
+    this._addTilesFromCenterOut(nwTilePoint, seTilePoint, zoom);
+    this._removeOtherTiles(nwTilePoint, seTilePoint);
+};
+
+ol.TileLoader.prototype._removeOtherTiles = function(nwTilePoint, seTilePoint) {
+    var kArr, x, y, key;
+    var zoom = this._view.getZoom();
+
+    for (key in this._tiles) {
+        if (this._tiles.hasOwnProperty(key)) {
+            kArr = key.split(':');
+            x = parseInt(kArr[0], 10);
+            y = parseInt(kArr[1], 10);
+            z = parseInt(kArr[2], 10);
+
+            // remove tile if it's out of bounds
+            if (z !== zoom || x < nwTilePoint.x|| x > seTilePoint.x || y < nwTilePoint.y || y > seTilePoint.y) {
+                this._removeTile(key);
+            }
+        }
+    }
+};
+
+ol.TileLoader.prototype._getExtent  = function()
+{
+    var view = this._map.getView();
+    var extent = this._mecratorProjection(view.calculateExtent(this._map.getSize()));
+    if (Math.abs(extent[0] - extent[2]) >= 360) {
+        extent[0] = mapProjection.earthBounding.west;
+        extent[2] = mapProjection.earthBounding.east;
+    }
+    else {
+        if(extent[0] >= -180 && extent[2] <=180) {
+            return extent;
+        }
+        var center = ol.extent.getCenter(extent);
+        var width = ol.extent.getWidth(extent);
+
+        center[0] = this._normalizeLongitude(center[0]);
+
+        extent[0] = center[0] - width /2;
+        extent[2] = center[1] + width /2;
+
+        if(extent[0] < mapProjection.earthBounding.west)
+            extent[0] = mapProjection.earthBounding.west;
+
+        if(extent[1] > mapProjection.earthBounding.east)
+            extent[1] = mapProjection.earthBounding.east;
+    }
+
+    return extent;
+};
+
+ol.TileLoader.prototype._removeTile = function (key) {
+    this.fire('tileRemoved', this._tiles[key]);
+    delete this._tiles[key];
+    delete this._tilesLoading[key];
+};
+
+ol.TileLoader.prototype._tileKey = function(tilePoint) {
+    return tilePoint.x + ':' + tilePoint.y + ':' + tilePoint.zoom;
+};
+
+ol.TileLoader.prototype._tileShouldBeLoaded = function (tilePoint) {
+    var k = this._tileKey(tilePoint);
+    return !(k in this._tiles) && !(k in this._tilesLoading);
+};
+
+ol.TileLoader.prototype._tileLoaded = function(tilePoint, tileData) {
+        this._tilesToLoad--;
+        var k = this._tileKey(tilePoint);
+        this._tiles[k] = tileData;
+        delete this._tilesLoading[k];
+        if(this._tilesToLoad === 0) {
+            this.fire("tilesLoaded");
+        }
+};
+
+ol.TileLoader.prototype._normalizeLongitude = function(lon) {
+    while (lon < -180 ) lon += 360;
+    while (lon > 180) lon -= 360;
+    return lon;
+};
+
+ol.TileLoader.prototype.getTilePos = function (tilePoint) {
+    var zoom = this._view.getZoom();
+    tilePoint = {
+        x: tilePoint.x * this._tileSize,
+        y: tilePoint.y * this._tileSize
+    };
+
+
+    var extent = this._mecratorProjection(this._view.calculateExtent(this._map.getSize()));
+    var bounds = this._getExtent();
+    var topLeft = this._getTopLeftInPixels();
+
+    var offsetX = 0, offsetY = 0;
+
+    if(topLeft[0] > 0) offsetX = topLeft[0];
+    if(topLeft[1] > 0) offsetY = topLeft[1];
+
+    var divTopLeft = mapProjection.toMapPoint(bounds[3], bounds[0], zoom, this._tileSize);
+
+    return {
+        x: offsetX + tilePoint.x - divTopLeft.x,
+        y: offsetY + tilePoint.y - divTopLeft.y
+    };
+};
+
+ol.TileLoader.prototype._getTopLeftInPixels = function(){
+    var center = this._mecratorProjection(this._view.getCenter());
+    var w = Math.floor(Math.abs(center[0]) / 180);
+
+    if(w == 0){
+        return this._map.getPixelFromCoordinate(this._olProjection([mapProjection.earthBounding.west,
+           mapProjection.earthBounding.north]));
+    }
+    else{
+        var normLon = this._normalizeLongitude(center[0]);
+        var diff = normLon > 0 ? 180 + normLon : 180 - Math.abs(normLon);
+        return this._map.getPixelFromCoordinate(this._olProjection([center[0] - diff,
+            mapProjection.earthBounding.north]));
+    }
+};
+
+ol.TileLoader.prototype._addTilesFromCenterOut = function (nwTilePoint, seTilePoint, zoom) {
+        var queue = [],
+            center = {
+                x: (nwTilePoint.x + seTilePoint.x) * 0.5,
+                y: (nwTilePoint.y + seTilePoint.y) * 0.5
+            };
+
+        var j, i, point;
+
+        for (j = nwTilePoint.y; j <= seTilePoint.y; j++) {
+            for (i = nwTilePoint.x; i <= seTilePoint.x; i++) {
+                point = {
+                    x: i,
+                    y: j,
+                    zoom: zoom
+                };
+
+                if (this._tileShouldBeLoaded(point)) {
+                    queue.push(point);
+                }
+            }
+        }
+
+        var tilesToLoad = queue.length;
+
+        if (tilesToLoad === 0) { return; }
+
+        function distanceToCenterSq(point) {
+            var dx = point.x - center.x;
+            var dy = point.y - center.y;
+            return dx * dx + dy * dy;
+        }
+
+        // load tiles in order of their distance to center
+        queue.sort(function (a, b) {
+            return distanceToCenterSq(a) - distanceToCenterSq(b);
+        });
+
+        this._tilesToLoad += tilesToLoad;
+
+        for (i = 0; i < tilesToLoad; i++) {
+            var t = queue[i];
+            var k = this._tileKey(t);
+            this._tilesLoading[k] = t;
+            // events
+            this.fire('tileAdded', t);
+        }
+
+        this.fire("tilesLoading");
+    };
+
+module.exports = ol.TileLoader;
+
+},{"./projection.js":21}],21:[function(require,module,exports){
+
+module.exports = {
+    earthBounding :
+    {
+        north : 85.05112878,
+        west: -180,
+        south : -85.05112878,
+        east: 180
+    },
+    clip: function(number, min, max){
+        return Math.min(Math.max(number, min), max);
+    },
+    getMapSize: function(zoom, tileSize){
+      return Math.pow(2.0, zoom) * tileSize;
+    },
+    toMapPoint: function(lat, long, zoom, tileSize){
+        lat = this.clip(lat, this.earthBounding.south, this.earthBounding.north);
+        long = this.clip(long, this.earthBounding.west, this.earthBounding.east);
+        var x = (long + 180.0) / 360.0;
+        var sinLat = Math.sin(lat * Math.PI / 180.0);
+        var y = 0.5 - Math.log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * Math.PI);
+
+        var mapSize = this.getMapSize(zoom, tileSize);
+
+        var pointX = this.clip(x * mapSize + 0.5, 0.0, mapSize - 1.0);
+        var pointY = this.clip(y * mapSize + 0.5, 0.0, mapSize - 1.0);
+
+        return {
+            x: Math.floor(pointX),
+            y: Math.floor(pointY),
+                zoom: zoom
+        };
+    }
+};
+
+},{}],22:[function(require,module,exports){
+(function (global){
+var carto = global.carto || require('carto');
+var torque = require('../');
+require('./canvas_layer');
+
+ol.TorqueLayer = function(options){
+    var self = this;
+    if (!torque.isBrowserSupported()) {
+        throw new Error("browser is not supported by torque");
+    }
+    options.tileLoader = true;
+    this.keys = [0];
+    Object.defineProperty(this, 'key', {
+        get: function() {
+            return this.getKey();
+        }
+    });
+    this.prevRenderedKey = 0;
+    if (options.cartocss) {
+        torque.extend(options, torque.common.TorqueLayer.optionsFromCartoCSS(options.cartocss));
+    }
+
+    options.resolution = options.resolution || 2;
+    options.steps = options.steps || 100;
+    options.visible = options.visible === undefined ? true: options.visible;
+    this.hidden = !options.visible;
+
+    this.animator = new torque.Animator(function(time) {
+        var k = time | 0;
+        if(self.getKey() !== k) {
+            self.setKey(k, { direct: true });
+        }
+    }, torque.extend(torque.clone(options), {
+        onPause: function() {
+            self.fire('pause');
+        },
+        onStop: function() {
+            self.fire('stop');
+        },
+        onStart: function() {
+            self.fire('play');
+        },
+        onStepsRange: function() {
+            self.fire('change:stepsRange', self.animator.stepsRange());
+        }
+    }));
+
+    this.play = this.animator.start.bind(this.animator);
+    this.stop = this.animator.stop.bind(this.animator);
+    this.pause = this.animator.pause.bind(this.animator);
+    this.toggle = this.animator.toggle.bind(this.animator);
+    this.setDuration = this.animator.duration.bind(this.animator);
+    this.isRunning = this.animator.isRunning.bind(this.animator);
+
+
+    ol.CanvasLayer.call(this, options);
+
+    this.options.renderer = this.options.renderer || 'point';
+    this.options.provider = this.options.provider || 'windshaft';
+
+    if (this.options.tileJSON) this.options.provider = 'tileJSON';
+
+    this.provider = new this.providers[this.options.provider](options);
+    this.renderer = new this.renderers[this.options.renderer](this.getCanvas(), options);
+
+    options.ready = function() {
+        self.fire("change:bounds", {
+            bounds: self.provider.getBounds()
+        });
+        self.animator.steps(self.provider.getSteps());
+        self.animator.rescale();
+        self.fire('change:steps', {
+            steps: self.provider.getSteps()
+        });
+        self.setKeys(self.getKeys());
+    };
+
+    this.renderer.on("allIconsLoaded", this.render.bind(this));
+
+
+    // for each tile shown on the map request the data
+    this.on('tileAdded', function(t) {
+        var tileData = this.provider.getTileData(t, t.zoom, function(tileData) {
+            // don't load tiles that are not being shown
+            if (t.zoom !== self._map.getView().getZoom()) return;
+            self._tileLoaded(t, tileData);
+            self._clearTileCaches();
+            if (tileData) {
+                self.redraw();
+            }
+            self.fire('tileLoaded');
+        });
+    }, this);
+};
+
+ol.TorqueLayer.prototype = torque.extend({},
+    ol.CanvasLayer.prototype,
+    torque.Event,
+    {
+    providers: {
+        'sql_api': torque.providers.json,
+        'url_template': torque.providers.JsonArray,
+        'windshaft': torque.providers.windshaft,
+        'tileJSON': torque.providers.tileJSON
+    },
+
+    renderers: {
+        'point': torque.renderer.Point,
+        'pixel': torque.renderer.Rectangle
+    },
+
+    onAdd: function(map)
+    {
+        ol.CanvasLayer.prototype.setMap.call(this, map);
+    },
+
+    _clearTileCaches: function() {
+        var t, tile;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            if (tile && tile._tileCache) {
+                tile._tileCache = null;
+            }
+        }
+    },
+
+    _clearCaches: function() {
+        this.renderer && this.renderer.clearSpriteCache();
+        this._clearTileCaches();
+    },
+
+    _pauseOnZoom: function() {
+        this.wasRunning = this.isRunning();
+        if (this.wasRunning) {
+            this.pause();
+        }
+    },
+
+    _resumeOnZoom: function() {
+        if (this.wasRunning) {
+            this.play();
+        }
+    },
+
+    hide: function() {
+        if(this.hidden) return this;
+        this.pause();
+        this.clear();
+        this.hidden = true;
+        return this;
+    },
+
+    show: function() {
+        if(!this.hidden) return this;
+        this.hidden = false;
+        this.play();
+        if (this.options.steps === 1){
+            this.redraw();
+        }
+        return this;
+    },
+
+    setSQL: function(sql) {
+        if (this.provider.options.named_map) throw new Error("SQL queries on named maps are read-only");
+        if (!this.provider || !this.provider.setSQL) {
+            throw new Error("this provider does not support SQL");
+        }
+        this.provider.setSQL(sql);
+        this._reloadTiles();
+        return this;
+    },
+
+    setBlendMode: function(_) {
+        this.renderer.setBlendMode(_);
+        this.redraw();
+    },
+
+    setSteps: function(steps) {
+        this.provider.setSteps(steps);
+        this._reloadTiles();
+    },
+
+    setColumn: function(column, isTime) {
+        this.provider.setColumn(column, isTime);
+        this._reloadTiles();
+    },
+
+    getTimeBounds: function() {
+        return this.provider && this.provider.getKeySpan();
+    },
+
+    clear: function() {
+        var canvas = this.getCanvas();
+        canvas.width = canvas.width;
+    },
+
+    /**
+     * render the selectef key
+     * don't call this function directly, it's called by
+     * requestAnimationFrame. Use redraw to refresh it
+     */
+    render: function() {
+        if(this.hidden) return;
+        var t, tile, pos;
+        var canvas = this.getCanvas();
+        this.renderer.clearCanvas();
+        var ctx = canvas.getContext('2d');
+
+        // renders only a "frame"
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            if (tile) {
+                pos = this.getTilePos(tile.coord);
+                ctx.setTransform(1, 0, 0, 1, pos.x, pos.y);
+                this.renderer.renderTile(tile, this.keys);
+            }
+        }
+        this.renderer.applyFilters();
+    },
+
+    /**
+     * set key to be shown. If it's a single value
+     * it renders directly, if it's an array it renders
+     * accumulated
+     */
+    setKey: function(key, options) {
+        this.setKeys([key], options);
+    },
+
+    /**
+     * returns the array of keys being rendered
+     */
+    getKeys: function() {
+        return this.keys;
+    },
+
+    setKeys: function(keys, options) {
+        this.keys = keys;
+        this.animator.step(this.getKey());
+        this._clearTileCaches();
+        this.redraw(options && options.direct);
+        this.fire('change:time', {
+            time: this.getTime(),
+            step: this.getKey(),
+            start: this.getKey(),
+            end: this.getLastKey()
+        });
+    },
+
+    getKey: function() {
+        return this.keys[0];
+    },
+
+    getLastKey: function() {
+        return this.keys[this.keys.length - 1];
+    },
+
+    /**
+     * helper function, does the same than ``setKey`` but only
+     * accepts scalars.
+     */
+    setStep: function(time) {
+        if(time === undefined || time.length !== undefined) {
+            throw new Error("setTime only accept scalars");
+        }
+        this.setKey(time);
+    },
+
+    renderRange: function(start, end) {
+        this.pause();
+        var keys = [];
+        for (var i = start; i <= end; i++) {
+            keys.push(i);
+        }
+        this.setKeys(keys);
+    },
+
+    resetRenderRange: function() {
+        this.stop();
+        this.play();
+    },
+
+    /**
+     * transform from animation step to Date object
+     * that contains the animation time
+     *
+     * ``step`` should be between 0 and ``steps - 1``
+     */
+    stepToTime: function(step) {
+        var times = this.provider.getKeySpan();
+        var time = times.start + (times.end - times.start)*(step/this.provider.getSteps());
+        return new Date(time);
+    },
+
+    timeToStep: function(timestamp) {
+        if (typeof timestamp === "Date") timestamp = timestamp.getTime();
+        if (!this.provider) return 0;
+        var times = this.provider.getKeySpan();
+        var step = (this.provider.getSteps() * (timestamp - times.start)) / (times.end - times.start);
+        return step;
+    },
+
+    getStep: function() {
+        return this.getKey();
+    },
+
+    /**
+     * returns the animation time defined by the data
+     * in the defined column. Date object
+     */
+    getTime: function() {
+        return this.stepToTime(this.getKey());
+    },
+
+    /**
+     * returns an object with the start and end times
+     */
+    getTimeSpan: function() {
+        return this.provider.getKeySpan();
+    },
+
+    /**
+     * set the cartocss for the current renderer
+     */
+    setCartoCSS: function(cartocss) {
+        if (this.provider.options.named_map) throw new Error("CartoCSS style on named maps is read-only");
+        if (!this.renderer) throw new Error('renderer is not valid');
+        var shader = new carto.RendererJS().render(cartocss);
+        this.renderer.setShader(shader);
+
+        // provider options
+        var options = torque.common.TorqueLayer.optionsFromLayer(shader.findLayer({ name: 'Map' }));
+        this.provider.setCartoCSS && this.provider.setCartoCSS(cartocss);
+        if(this.provider.setOptions(options)) {
+            this._reloadTiles();
+        }
+
+        torque.extend(this.options, options);
+
+        // animator options
+        if (options.animationDuration) {
+            this.animator.duration(options.animationDuration);
+        }
+        this._clearCaches();
+        this.redraw();
+        return this;
+    },
+
+    /**
+     * get active points for a step in active zoom
+     * returns a list of bounding boxes [[] , [], []]
+     * empty list if there is no active pixels
+     */
+    getActivePointsBBox: function(step) {
+        var positions = [];
+        for(var t in this._tiles) {
+            var tile = this._tiles[t];
+            positions = positions.concat(this.renderer.getActivePointsBBox(tile, step));
+        }
+        return positions;
+    },
+
+    /**
+     * return an array with the values for all the pixels active for the step
+     */
+    getValues: function(step) {
+        var values = [];
+        step = step === undefined ? this.getKey(): step;
+        var t, tile;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            this.renderer.getValues(tile, step, values);
+        }
+        return values;
+    },
+
+    /**
+     * return the value for position relative to map coordinates. null for no value
+     */
+    getValueForPos: function(x, y, step) {
+        step = step === undefined ? this.getKey(): step;
+        var t, tile, pos, value = null, xx, yy;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            pos = this.getTilePos(tile.coord);
+            xx = x - pos.x;
+            yy = y - pos.y;
+            if (xx >= 0 && yy >= 0 && xx < this.renderer.TILE_SIZE && yy <= this.renderer.TILE_SIZE) {
+                value = this.renderer.getValueFor(tile, step, xx, yy);
+            }
+            if (value !== null) {
+                return value;
+            }
+        }
+        return null;
+    },
+
+    getValueForBBox: function(x, y, w, h) {
+        var xf = x + w, yf = y + h, _x=x;
+        var sum = 0;
+        for(_y = y; _y<yf; _y+=this.options.resolution){
+            for(_x = x; _x<xf; _x+=this.options.resolution){
+                var thisValue = this.getValueForPos(_x,_y);
+                if (thisValue){
+                    var bb = thisValue.bbox;
+                    var xy = this._map.latLngToContainerPoint([bb[1].lat, bb[1].lon]);
+                    if(xy.x < xf && xy.y < yf){
+                        sum += thisValue.value;
+                    }
+                }
+            }
+        }
+        return sum;
+    },
+
+    /** return the number of points for a step */
+    pointCount: function(step) {
+        var t, tile;
+        step = step === undefined ? this.key: step;
+        var c = 0;
+        for(t in this._tiles) {
+            tile = this._tiles[t];
+            if (tile) {
+                c += tile.timeCount[step];
+            }
+        }
+        return c;
+    },
+
+    invalidate: function() {
+        this.provider.reload();
+    },
+
+    setStepsRange: function(start, end) {
+        this.animator.stepsRange(start, end);
+    },
+
+    removeStepsRange: function() {
+        this.animator.removeCustomStepsRange();
+    },
+
+    getStepsRange: function() {
+        return this.animator.stepsRange();
+    }
+});
+
+
+module.exports = ol.TorqueLayer;
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"../":11,"./canvas_layer":18,"carto":43}],23:[function(require,module,exports){
 /*
 # metrics profiler
 
@@ -3282,7 +4219,7 @@ Profiler.metric = function(name) {
 
 module.exports = Profiler;
 
-},{}],19:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 module.exports = {
     json: require('./json'),
     JsonArray: require('./jsonarray'),
@@ -3290,7 +4227,7 @@ module.exports = {
     tileJSON: require('./tilejson')
 };
 
-},{"./json":20,"./jsonarray":21,"./tilejson":22,"./windshaft":23}],20:[function(require,module,exports){
+},{"./json":25,"./jsonarray":26,"./tilejson":27,"./windshaft":28}],25:[function(require,module,exports){
 var torque = require('../');
 var Profiler = require('../profiler');
 
@@ -3869,7 +4806,7 @@ var Profiler = require('../profiler');
 
 module.exports = json;
 
-},{"../":11,"../profiler":18}],21:[function(require,module,exports){
+},{"../":11,"../profiler":23}],26:[function(require,module,exports){
 var torque = require('../');
 var Profiler = require('../profiler');
 
@@ -4099,7 +5036,7 @@ var Profiler = require('../profiler');
 
   module.exports = json;
 
-},{"../":11,"../profiler":18}],22:[function(require,module,exports){
+},{"../":11,"../profiler":23}],27:[function(require,module,exports){
   var torque = require('../');
 
   var Uint8Array = torque.types.Uint8Array;
@@ -4439,7 +5376,7 @@ var Profiler = require('../profiler');
   };
 
   module.exports = tileJSON;
-},{"../":11}],23:[function(require,module,exports){
+},{"../":11}],28:[function(require,module,exports){
   var torque = require('../');
   var Profiler = require('../profiler');
 
@@ -4929,7 +5866,7 @@ var Profiler = require('../profiler');
 
   module.exports = windshaft;
 
-},{"../":11,"../profiler":18}],24:[function(require,module,exports){
+},{"../":11,"../profiler":23}],29:[function(require,module,exports){
   var TAU = Math.PI*2;
   // min value to render a line. 
   // it does not make sense to render a line of a width is not even visible
@@ -5022,13 +5959,13 @@ module.exports = {
     MAX_SPRITE_RADIUS: MAX_SPRITE_RADIUS
 };
 
-},{}],25:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 module.exports = {
     cartocss: require('./cartocss_render'),
     Point: require('./point'),
     Rectangle: require('./rectangle')
 };
-},{"./cartocss_render":24,"./point":26,"./rectangle":27}],26:[function(require,module,exports){
+},{"./cartocss_render":29,"./point":31,"./rectangle":32}],31:[function(require,module,exports){
 (function (global){
 var torque = require('../');
 var cartocss = require('./cartocss_render');
@@ -5052,18 +5989,34 @@ var Filters = require('./torque_filters');
   ].join('\n');
 
   var COMP_OP_TO_CANVAS = {
+    "difference": "difference",
     "src": 'source-over',
+    "exclusion": "exclusion",
+    "dst": "destination-in",
+    "multiply": "multiply",
+    "contrast": "contrast",
     "src-over": 'source-over',
+    "screen": "screen",
+    "invert": "invert",
     "dst-over": 'destination-over',
+    "overlay": "overlay",
+    "invert-rgb": "invert",
     "src-in": 'source-in',
-    "dst-in": 'destination-in',
-    "src-out": 'source-out',
-    "dst-out": 'destination-out',
-    "src-atop": 'source-atop',
-    "dst-atop": 'destination-atop',
-    "xor": 'xor',
     "darken": 'darken',
-    "lighten": 'lighten'
+    "dst-in": 'destination-in',
+    "lighten": 'lighten',
+    "src-out": 'source-out',
+    "color-dodge": "color-dodge",
+    "hue":"hue",
+    "dst-out": 'destination-out',
+    "color-burn":"color-burn",
+    "saturation":"saturation",
+    "src-atop": 'source-atop',
+    "hard-light":"hard-light",
+    "color":"color",
+    "dst-atop": 'destination-atop',
+    "soft-light":"soft-light",
+    "xor": 'xor'
   }
 
   function compop2canvas(compop) {
@@ -5105,7 +6058,7 @@ var Filters = require('./torque_filters');
         var ctx = this._ctx;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         var compop = this._Map['comp-op']
-        ctx.globalCompositeOperation = compop2canvas(compop);
+        ctx.globalCompositeOperation = compop2canvas(compop) || compop;
         ctx.fillStyle = color;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
@@ -5504,7 +6457,7 @@ var Filters = require('./torque_filters');
 module.exports = PointRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"../profiler":18,"./cartocss_render":24,"./torque_filters":28,"carto":38}],27:[function(require,module,exports){
+},{"../":11,"../profiler":23,"./cartocss_render":29,"./torque_filters":33,"carto":43}],32:[function(require,module,exports){
 (function (global){
 var carto = global.carto || require('carto');
 
@@ -5668,7 +6621,7 @@ var carto = global.carto || require('carto');
 module.exports = RectanbleRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"carto":38}],28:[function(require,module,exports){
+},{"carto":43}],33:[function(require,module,exports){
 /*
  Based on simpleheat, a tiny JavaScript library for drawing heatmaps with Canvas, 
  by Vladimir Agafonkin
@@ -5760,7 +6713,7 @@ torque_filters.prototype = {
 
 module.exports = torque_filters;
 
-},{}],29:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 (function (global){
 var torque = require('./core');
 
@@ -5864,9 +6817,9 @@ module.exports = {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./core":5}],30:[function(require,module,exports){
+},{"./core":5}],35:[function(require,module,exports){
 
-},{}],31:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 // http://wiki.commonjs.org/wiki/Unit_Testing/1.0
 //
 // THIS IS NOT TESTED NOR LIKELY TO WORK OUTSIDE V8!
@@ -6228,7 +7181,7 @@ var objectKeys = Object.keys || function (obj) {
   return keys;
 };
 
-},{"util/":36}],32:[function(require,module,exports){
+},{"util/":41}],37:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -6253,7 +7206,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],33:[function(require,module,exports){
+},{}],38:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -6481,7 +7434,7 @@ var substr = 'ab'.substr(-1) === 'b'
 ;
 
 }).call(this,require('_process'))
-},{"_process":34}],34:[function(require,module,exports){
+},{"_process":39}],39:[function(require,module,exports){
 // shim for using process in browser
 
 var process = module.exports = {};
@@ -6569,14 +7522,14 @@ process.chdir = function (dir) {
     throw new Error('process.chdir is not supported');
 };
 
-},{}],35:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],36:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -7166,7 +8119,7 @@ function hasOwnProperty(obj, prop) {
 }
 
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":35,"_process":34,"inherits":32}],37:[function(require,module,exports){
+},{"./support/isBuffer":40,"_process":39,"inherits":37}],42:[function(require,module,exports){
 (function (tree) {
 
 tree.functions = {
@@ -7379,7 +8332,7 @@ function clamp(val) {
 
 })(require('./tree'));
 
-},{"./tree":43}],38:[function(require,module,exports){
+},{"./tree":48}],43:[function(require,module,exports){
 (function (process,__dirname){
 var util = require('util'),
     fs = require('fs'),
@@ -7498,8 +8451,8 @@ function stylize(str, style) {
            '\033[' + styles[style][1] + 'm';
 }
 
-}).call(this,require('_process'),"/node_modules/carto/lib/carto")
-},{"../../package.json":74,"./functions":37,"./parser":39,"./renderer":40,"./renderer_js":41,"./torque-reference":42,"./tree":43,"./tree/call":44,"./tree/color":45,"./tree/comment":46,"./tree/definition":47,"./tree/dimension":48,"./tree/element":49,"./tree/expression":50,"./tree/field":51,"./tree/filter":52,"./tree/filterset":53,"./tree/fontset":54,"./tree/frame_offset":55,"./tree/imagefilter":56,"./tree/invalid":57,"./tree/keyword":58,"./tree/layer":59,"./tree/literal":60,"./tree/operation":61,"./tree/quoted":62,"./tree/reference":63,"./tree/rule":64,"./tree/ruleset":65,"./tree/selector":66,"./tree/style":67,"./tree/url":68,"./tree/value":69,"./tree/variable":70,"./tree/zoom":71,"_process":34,"fs":30,"path":33,"util":36}],39:[function(require,module,exports){
+}).call(this,require('_process'),"/node_modules\\carto\\lib\\carto")
+},{"../../package.json":78,"./functions":42,"./parser":44,"./renderer":45,"./renderer_js":46,"./torque-reference":47,"./tree":48,"./tree/call":49,"./tree/color":50,"./tree/comment":51,"./tree/definition":52,"./tree/dimension":53,"./tree/element":54,"./tree/expression":55,"./tree/field":56,"./tree/filter":57,"./tree/filterset":58,"./tree/fontset":59,"./tree/frame_offset":60,"./tree/imagefilter":61,"./tree/invalid":62,"./tree/keyword":63,"./tree/layer":64,"./tree/literal":65,"./tree/operation":66,"./tree/quoted":67,"./tree/reference":68,"./tree/rule":69,"./tree/ruleset":70,"./tree/selector":71,"./tree/style":72,"./tree/url":73,"./tree/value":74,"./tree/variable":75,"./tree/zoom":76,"_process":39,"fs":35,"path":38,"util":41}],44:[function(require,module,exports){
 (function (global){
 var carto = exports,
     tree = require('./tree'),
@@ -8284,7 +9237,7 @@ carto.Parser = function Parser(env) {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./tree":43,"underscore":73}],40:[function(require,module,exports){
+},{"./tree":48,"underscore":79}],45:[function(require,module,exports){
 (function (global){
 var _ = global._ || require('underscore');
 var carto = require('./index');
@@ -8690,7 +9643,7 @@ module.exports.inheritDefinitions = inheritDefinitions;
 module.exports.sortStyles = sortStyles;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./index":38,"underscore":73}],41:[function(require,module,exports){
+},{"./index":43,"underscore":79}],46:[function(require,module,exports){
 (function (global){
 (function(carto) {
 var tree = require('./tree');
@@ -8982,7 +9935,7 @@ if(typeof(module) !== 'undefined') {
 })(require('../carto'));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../carto":38,"./torque-reference":42,"./tree":43,"underscore":73}],42:[function(require,module,exports){
+},{"../carto":43,"./torque-reference":47,"./tree":48,"underscore":79}],47:[function(require,module,exports){
 var _mapnik_reference_latest = {
     "version": "2.1.1",
     "style": {
@@ -10896,7 +11849,7 @@ module.exports = {
   }
 };
 
-},{}],43:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 /**
  * TODO: document this. What does this do?
  */
@@ -10909,7 +11862,7 @@ if(typeof(module) !== "undefined") {
   };
 }
 
-},{}],44:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 (function (global){
 (function(tree) {
 var _ = global._ || require('underscore');
@@ -11025,7 +11978,7 @@ tree.Call.prototype = {
 })(require('../tree'));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../tree":43,"underscore":73}],45:[function(require,module,exports){
+},{"../tree":48,"underscore":79}],50:[function(require,module,exports){
 (function(tree) {
 // RGB Colors - #ff0014, #eee
 // can be initialized with a 3 or 6 char string or a 3 or 4 element
@@ -11122,7 +12075,7 @@ tree.Color.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],46:[function(require,module,exports){
+},{"../tree":48}],51:[function(require,module,exports){
 (function(tree) {
 
 tree.Comment = function Comment(value, silent) {
@@ -11139,7 +12092,7 @@ tree.Comment.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],47:[function(require,module,exports){
+},{"../tree":48}],52:[function(require,module,exports){
 (function (global){
 (function(tree) {
 var assert = require('assert'),
@@ -11402,7 +12355,7 @@ tree.Definition.prototype.toJS = function(env) {
 })(require('../tree'));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../tree":43,"assert":31,"underscore":73}],48:[function(require,module,exports){
+},{"../tree":48,"assert":36,"underscore":79}],53:[function(require,module,exports){
 (function (global){
 (function(tree) {
 var _ = global._ || require('underscore');
@@ -11505,7 +12458,7 @@ tree.Dimension.prototype = {
 })(require('../tree'));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../tree":43,"underscore":73}],49:[function(require,module,exports){
+},{"../tree":48,"underscore":79}],54:[function(require,module,exports){
 (function(tree) {
 
 // An element is an id or class selector
@@ -11537,7 +12490,7 @@ tree.Element.prototype.toString = function() { return this.value; };
 
 })(require('../tree'));
 
-},{"../tree":43}],50:[function(require,module,exports){
+},{"../tree":48}],55:[function(require,module,exports){
 (function(tree) {
 
 tree.Expression = function Expression(value) {
@@ -11565,7 +12518,7 @@ tree.Expression.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],51:[function(require,module,exports){
+},{"../tree":48}],56:[function(require,module,exports){
 (function(tree) {
 
 tree.Field = function Field(content) {
@@ -11584,7 +12537,7 @@ tree.Field.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],52:[function(require,module,exports){
+},{"../tree":48}],57:[function(require,module,exports){
 (function(tree) {
 
 tree.Filter = function Filter(key, op, val, index, filename) {
@@ -11654,7 +12607,7 @@ tree.Filter.prototype.toString = function() {
 
 })(require('../tree'));
 
-},{"../tree":43}],53:[function(require,module,exports){
+},{"../tree":48}],58:[function(require,module,exports){
 (function (global){
 var tree = require('../tree');
 var _ = global._ || require('underscore');
@@ -11750,7 +12703,7 @@ tree.Filterset.prototype.toJS = function(env) {
       val = filter._val.toString(true);
     }
     var attrs = "data";
-    return attrs + "." + filter.key.value  + " " + op + " " + (val.is === 'string' ? "'"+ val +"'" : val);
+    return attrs + "." + filter.key.value  + " " + op + " " + (val.is === 'string' ? "'" + val.toString().replace(/'/g, "\\'") + "'" : val);
   }).join(' && ');
 };
 
@@ -11925,7 +12878,7 @@ tree.Filterset.prototype.add = function(filter, env) {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../tree":43,"underscore":73}],54:[function(require,module,exports){
+},{"../tree":48,"underscore":79}],59:[function(require,module,exports){
 (function(tree) {
 
 tree._getFontSet = function(env, fonts) {
@@ -11958,7 +12911,7 @@ tree.FontSet.prototype.toXML = function(env) {
 
 })(require('../tree'));
 
-},{"../tree":43}],55:[function(require,module,exports){
+},{"../tree":48}],60:[function(require,module,exports){
 var tree = require('../tree');
 
 // Storage for Frame offset value
@@ -11987,7 +12940,7 @@ tree.FrameOffset.max = 32;
 tree.FrameOffset.none = 0;
 
 
-},{"../tree":43}],56:[function(require,module,exports){
+},{"../tree":48}],61:[function(require,module,exports){
 (function(tree) {
 
 tree.ImageFilter = function ImageFilter(filter, args) {
@@ -12011,7 +12964,7 @@ tree.ImageFilter.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],57:[function(require,module,exports){
+},{"../tree":48}],62:[function(require,module,exports){
 (function (tree) {
 tree.Invalid = function Invalid(chunk, index, message) {
     this.chunk = chunk;
@@ -12035,7 +12988,7 @@ tree.Invalid.prototype.ev = function(env) {
 };
 })(require('../tree'));
 
-},{"../tree":43}],58:[function(require,module,exports){
+},{"../tree":48}],63:[function(require,module,exports){
 (function(tree) {
 
 tree.Keyword = function Keyword(value) {
@@ -12054,7 +13007,7 @@ tree.Keyword.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],59:[function(require,module,exports){
+},{"../tree":48}],64:[function(require,module,exports){
 (function(tree) {
 
 tree.LayerXML = function(obj, styles) {
@@ -12093,7 +13046,7 @@ tree.LayerXML = function(obj, styles) {
 
 })(require('../tree'));
 
-},{"../tree":43}],60:[function(require,module,exports){
+},{"../tree":48}],65:[function(require,module,exports){
 // A literal is a literal string for Mapnik - the
 // result of the combination of a `tree.Field` with any
 // other type.
@@ -12115,7 +13068,7 @@ tree.Literal.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],61:[function(require,module,exports){
+},{"../tree":48}],66:[function(require,module,exports){
 // An operation is an expression with an op in between two operands,
 // like 2 + 1.
 (function(tree) {
@@ -12214,7 +13167,7 @@ tree.operate = function(op, a, b) {
 
 })(require('../tree'));
 
-},{"../tree":43}],62:[function(require,module,exports){
+},{"../tree":48}],67:[function(require,module,exports){
 (function(tree) {
 
 tree.Quoted = function Quoted(content) {
@@ -12246,7 +13199,7 @@ tree.Quoted.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],63:[function(require,module,exports){
+},{"../tree":48}],68:[function(require,module,exports){
 (function (global){
 // Carto pulls in a reference from the `mapnik-reference`
 // module. This file builds indexes from that file for its various
@@ -12469,7 +13422,7 @@ tree.Reference = ref;
 })(require('../tree'));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../tree":43,"mapnik-reference":72,"underscore":73}],64:[function(require,module,exports){
+},{"../tree":48,"mapnik-reference":77,"underscore":79}],69:[function(require,module,exports){
 (function(tree) {
 // a rule is a single property and value combination, or variable
 // name and value combination, like
@@ -12591,7 +13544,7 @@ tree.Rule.prototype.ev = function(context) {
 
 })(require('../tree'));
 
-},{"../tree":43}],65:[function(require,module,exports){
+},{"../tree":48}],70:[function(require,module,exports){
 (function(tree) {
 
 tree.Ruleset = function Ruleset(selectors, rules) {
@@ -12770,7 +13723,7 @@ tree.Ruleset.prototype = {
 };
 })(require('../tree'));
 
-},{"../tree":43}],66:[function(require,module,exports){
+},{"../tree":48}],71:[function(require,module,exports){
 (function(tree) {
 
 tree.Selector = function Selector(filters, zoom, frame_offset, elements, attachment, conditions, index) {
@@ -12799,7 +13752,7 @@ tree.Selector.prototype.specificity = function() {
 
 })(require('../tree'));
 
-},{"../tree":43}],67:[function(require,module,exports){
+},{"../tree":48}],72:[function(require,module,exports){
 (function (global){
 (function(tree) {
 var _ = global._ || require('underscore');
@@ -12871,7 +13824,7 @@ tree.StyleXML = function(name, attachment, definitions, env) {
 })(require('../tree'));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../tree":43,"underscore":73}],68:[function(require,module,exports){
+},{"../tree":48,"underscore":79}],73:[function(require,module,exports){
 (function(tree) {
 
 tree.URL = function URL(val, paths) {
@@ -12891,7 +13844,7 @@ tree.URL.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],69:[function(require,module,exports){
+},{"../tree":48}],74:[function(require,module,exports){
 (function(tree) {
 
 tree.Value = function Value(value) {
@@ -12944,7 +13897,7 @@ tree.Value.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],70:[function(require,module,exports){
+},{"../tree":48}],75:[function(require,module,exports){
 (function(tree) {
 
 tree.Variable = function Variable(name, index, filename) {
@@ -12987,7 +13940,7 @@ tree.Variable.prototype = {
 
 })(require('../tree'));
 
-},{"../tree":43}],71:[function(require,module,exports){
+},{"../tree":48}],76:[function(require,module,exports){
 var tree = require('../tree');
 
 // Storage for zoom ranges. Only supports continuous ranges,
@@ -13107,7 +14060,7 @@ tree.Zoom.prototype.toString = function() {
     return str;
 };
 
-},{"../tree":43}],72:[function(require,module,exports){
+},{"../tree":48}],77:[function(require,module,exports){
 (function (__dirname){
 var fs = require('fs'),
     path = require('path'),
@@ -13135,8 +14088,94 @@ refs.map(function(version) {
     }
 });
 
-}).call(this,"/node_modules/carto/node_modules/mapnik-reference")
-},{"fs":30,"path":33}],73:[function(require,module,exports){
+}).call(this,"/node_modules\\carto\\node_modules\\mapnik-reference")
+},{"fs":35,"path":38}],78:[function(require,module,exports){
+module.exports={
+  "name": "carto",
+  "version": "0.15.1-cdb1",
+  "description": "CartoCSS Stylesheet Compiler",
+  "url": "https://github.com/cartodb/carto",
+  "repository": {
+    "type": "git",
+    "url": "http://github.com/cartodb/carto.git"
+  },
+  "author": {
+    "name": "CartoDB",
+    "url": "http://cartodb.com/"
+  },
+  "keywords": [
+    "maps",
+    "css",
+    "stylesheets"
+  ],
+  "contributors": [
+    {
+      "name": "Tom MacWright",
+      "email": "macwright@gmail.com"
+    },
+    {
+      "name": "Konstantin Käfer"
+    },
+    {
+      "name": "Alexis Sellier",
+      "email": "self@cloudhead.net"
+    },
+    {
+      "name": "Raul Ochoa",
+      "email": "rochoa@cartodb.com"
+    },
+    {
+      "name": "Javi Santana",
+      "email": "jsantana@cartodb.com"
+    }
+  ],
+  "licenses": [
+    {
+      "type": "Apache"
+    }
+  ],
+  "bin": {
+    "carto": "./bin/carto"
+  },
+  "man": [
+    "./man/carto.1"
+  ],
+  "main": "./lib/carto/index",
+  "engines": {
+    "node": ">=0.4.x"
+  },
+  "dependencies": {
+    "underscore": "~1.6.0",
+    "mapnik-reference": "~6.0.2",
+    "optimist": "~0.6.0"
+  },
+  "devDependencies": {
+    "mocha": "1.12.x",
+    "jshint": "0.2.x",
+    "sax": "0.1.x",
+    "istanbul": "~0.2.14",
+    "coveralls": "~2.10.1",
+    "browserify": "~7.0.0",
+    "uglify-js": "1.3.3"
+  },
+  "scripts": {
+    "pretest": "npm install",
+    "test": "mocha -R spec",
+    "coverage": "istanbul cover ./node_modules/.bin/_mocha && coveralls < ./coverage/lcov.info"
+  },
+  "readme": "# CartoCSS\n\n[![Build Status](https://secure.travis-ci.org/mapbox/carto.png)](http://travis-ci.org/mapbox/carto)\n\nIs as stylesheet renderer for javascript, It's an evolution of the Mapnik renderer from Mapbox.\nPlease, see original [Mapbox repo](http://github.com/mapbox/carto) for more information and credits\n\n## Quick Start\n\n```javascript\n// shader is a CartoCSS object\n\nvar cartocss = [\n    '#layer {',\n    ' marker-width: [property]',\n    ' marker-fill: red',\n    '}'\n].join('')\nvar shader = new carto.RendererJS().render(cartocss);\nvar layers = shader.getLayers()\nfor (var i = 0; i < layers.length; ++i) {\n    var layer = layers[i];\n    console.log(\"layer name: \", layer.fullName())\n    console.log(\"- frames: \", layer.frames())\n    console.log(\"- attachment: \", layer.attachment())\n\n    var layerShader = layer.getStyle({ property: 1 }, { zoom: 10 })\n    console.log(layerShader['marker-width']) // 1\n    console.log(layerShader['marker-fill']) // #FF0000\n}\n\n```\n\n# API\n\n## RendererJS\n\n### render(cartocss)\n\n## CartoCSS\n\ncompiled cartocss object\n\n### getLayers\n\nreturn the layers, an array of ``CartoCSS.Layer`` object\n\n### getDefault\n\nreturn the default layer (``CartoCSS.Layer``), usually the Map layer\n\n\n### findLayer(where)\n\nfind a layer using where object.\n\n```\nshader.findLayer({ name: 'test' })\n```\n\n## CartoCSS.Layer\n\n### getStyle(props, context)\n\nreturn the evaluated style:\n    - props: object containing properties needed to render the style. If the cartocss style uses\n      some variables they should be passed in this object\n    - context: rendering context variables like ``zoom`` or animation ``frame``\n\n\n\n\n\n\n\n\n\n\n## Reference Documentation\n\n* [mapbox.com/carto](http://mapbox.com/carto/)\n\n\n",
+  "readmeFilename": "README.md",
+  "bugs": {
+    "url": "https://github.com/cartodb/carto/issues"
+  },
+  "homepage": "https://github.com/cartodb/carto",
+  "_id": "carto@0.15.1-cdb1",
+  "_shasum": "b84c5270f0de5c2a296ca6fd0695353d51fb9ec9",
+  "_from": "https://github.com/CartoDB/carto/archive/master.tar.gz",
+  "_resolved": "https://github.com/CartoDB/carto/archive/master.tar.gz"
+}
+
+},{}],79:[function(require,module,exports){
 //     Underscore.js 1.6.0
 //     http://underscorejs.org
 //     (c) 2009-2014 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
@@ -14480,92 +15519,6 @@ refs.map(function(version) {
     });
   }
 }).call(this);
-
-},{}],74:[function(require,module,exports){
-module.exports={
-  "name": "carto",
-  "version": "0.15.1-cdb1",
-  "description": "CartoCSS Stylesheet Compiler",
-  "url": "https://github.com/cartodb/carto",
-  "repository": {
-    "type": "git",
-    "url": "http://github.com/cartodb/carto.git"
-  },
-  "author": {
-    "name": "CartoDB",
-    "url": "http://cartodb.com/"
-  },
-  "keywords": [
-    "maps",
-    "css",
-    "stylesheets"
-  ],
-  "contributors": [
-    {
-      "name": "Tom MacWright",
-      "email": "macwright@gmail.com"
-    },
-    {
-      "name": "Konstantin Käfer"
-    },
-    {
-      "name": "Alexis Sellier",
-      "email": "self@cloudhead.net"
-    },
-    {
-      "name": "Raul Ochoa",
-      "email": "rochoa@cartodb.com"
-    },
-    {
-      "name": "Javi Santana",
-      "email": "jsantana@cartodb.com"
-    }
-  ],
-  "licenses": [
-    {
-      "type": "Apache"
-    }
-  ],
-  "bin": {
-    "carto": "./bin/carto"
-  },
-  "man": [
-    "./man/carto.1"
-  ],
-  "main": "./lib/carto/index",
-  "engines": {
-    "node": ">=0.4.x"
-  },
-  "dependencies": {
-    "underscore": "~1.6.0",
-    "mapnik-reference": "~6.0.2",
-    "optimist": "~0.6.0"
-  },
-  "devDependencies": {
-    "mocha": "1.12.x",
-    "jshint": "0.2.x",
-    "sax": "0.1.x",
-    "istanbul": "~0.2.14",
-    "coveralls": "~2.10.1",
-    "browserify": "~7.0.0",
-    "uglify-js": "1.3.3"
-  },
-  "scripts": {
-    "pretest": "npm install",
-    "test": "mocha -R spec",
-    "coverage": "istanbul cover ./node_modules/.bin/_mocha && coveralls < ./coverage/lcov.info"
-  },
-  "readme": "# CartoCSS\n\n[![Build Status](https://secure.travis-ci.org/mapbox/carto.png)](http://travis-ci.org/mapbox/carto)\n\nIs as stylesheet renderer for javascript, It's an evolution of the Mapnik renderer from Mapbox.\nPlease, see original [Mapbox repo](http://github.com/mapbox/carto) for more information and credits\n\n## Quick Start\n\n```javascript\n// shader is a CartoCSS object\n\nvar cartocss = [\n    '#layer {',\n    ' marker-width: [property]',\n    ' marker-fill: red',\n    '}'\n].join('')\nvar shader = new carto.RendererJS().render(cartocss);\nvar layers = shader.getLayers()\nfor (var i = 0; i < layers.length; ++i) {\n    var layer = layers[i];\n    console.log(\"layer name: \", layer.fullName())\n    console.log(\"- frames: \", layer.frames())\n    console.log(\"- attachment: \", layer.attachment())\n\n    var layerShader = layer.getStyle({ property: 1 }, { zoom: 10 })\n    console.log(layerShader['marker-width']) // 1\n    console.log(layerShader['marker-fill']) // #FF0000\n}\n\n```\n\n# API\n\n## RendererJS\n\n### render(cartocss)\n\n## CartoCSS\n\ncompiled cartocss object\n\n### getLayers\n\nreturn the layers, an array of ``CartoCSS.Layer`` object\n\n### getDefault\n\nreturn the default layer (``CartoCSS.Layer``), usually the Map layer\n\n\n### findLayer(where)\n\nfind a layer using where object.\n\n```\nshader.findLayer({ name: 'test' })\n```\n\n## CartoCSS.Layer\n\n### getStyle(props, context)\n\nreturn the evaluated style:\n    - props: object containing properties needed to render the style. If the cartocss style uses\n      some variables they should be passed in this object\n    - context: rendering context variables like ``zoom`` or animation ``frame``\n\n\n\n\n\n\n\n\n\n\n## Reference Documentation\n\n* [mapbox.com/carto](http://mapbox.com/carto/)\n\n\n",
-  "readmeFilename": "README.md",
-  "bugs": {
-    "url": "https://github.com/cartodb/carto/issues"
-  },
-  "homepage": "https://github.com/cartodb/carto",
-  "_id": "carto@0.15.1-cdb1",
-  "_shasum": "62534c2975cbee073f10c6c14a0c7e889c9469e7",
-  "_from": "https://github.com/CartoDB/carto/archive/master.tar.gz",
-  "_resolved": "https://github.com/CartoDB/carto/archive/master.tar.gz"
-}
 
 },{}]},{},[11])(11)
 });
