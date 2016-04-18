@@ -1284,7 +1284,7 @@ CanvasLayer.prototype.scheduleUpdate = function() {
 module.exports = CanvasLayer;
 
 },{}],7:[function(require,module,exports){
-    /*
+/*
  ====================
  canvas setup for drawing tiles
  ====================
@@ -2145,7 +2145,6 @@ module.exports.GMapsTorqueLayer = gmaps.GMapsTorqueLayer;
 module.exports.GMapsTiledTorqueLayer = gmaps.GMapsTiledTorqueLayer;
 
 require('./ol');
-
 },{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":24,"./renderer":30,"./request":34}],12:[function(require,module,exports){
 require('./leaflet_tileloader_mixin');
 
@@ -3194,9 +3193,8 @@ module.exports = MercatorProjection;
 require('./ol_tileloader_mixin');
 
 ol.CanvasLayer = function(options) {
-    this.root_ = goog.dom.createDom("DIV", {
-        class: "ol-heatmap-layer"
-    });
+    this.root_ = document.createElement('div');
+    this.root_.setAttribute('class', 'ol-heatmap-layer');
 
     this.options = {
         subdomains: 'abc',
@@ -3210,7 +3208,7 @@ ol.CanvasLayer = function(options) {
     };
 
     options = options || {};
-    goog.object.extend(this.options, options);
+    torque.extend(this.options, options);
 
     ol.TileLoader.call(this, this.options.tileSize);
 
@@ -3262,7 +3260,7 @@ ol.CanvasLayer.prototype.setMap = function(map){
     //}, this);
 
     if(map){
-        var overlayContainer  = goog.dom.getElementByClass("ol-overlaycontainer", this._map.getViewport());
+        var overlayContainer  = this._map.getViewport().getElementsByClassName("ol-overlaycontainer")[0];
         overlayContainer.appendChild(this.root_);
 
         //map.on({ 'viewreset': this._reset }, this);
