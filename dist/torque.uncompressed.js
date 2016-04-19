@@ -2145,7 +2145,7 @@ module.exports.GMapsTorqueLayer = gmaps.GMapsTorqueLayer;
 module.exports.GMapsTiledTorqueLayer = gmaps.GMapsTiledTorqueLayer;
 
 require('./ol');
-},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":24,"./renderer":30,"./request":34}],12:[function(require,module,exports){
+},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":23,"./renderer":29,"./request":33}],12:[function(require,module,exports){
 require('./leaflet_tileloader_mixin');
 
 /**
@@ -3355,18 +3355,18 @@ if (typeof ol !== 'undefined') {
     require('./torque');
 }
 
-},{"./torque":22}],20:[function(require,module,exports){
-var mapProjection = require("./projection.js");
-
+},{"./torque":21}],20:[function(require,module,exports){
 ol.TileLoader = function(tileSize){
     this._tileSize = tileSize;
     this._tiles = {};
     this._tilesLoading = {};
     this._tilesToLoad = 0;
-
-    this._mecratorProjection = ol.proj.getTransform("EPSG:3857", "EPSG:4326");
-    this._olProjection = ol.proj.getTransform("EPSG:4326", "EPSG:3857");
     this._updateTiles = this._updateTiles.bind(this);
+
+    this._tileGrid = ol.tilegrid.createXYZ({
+        extent: ol.tilegrid.extentFromProjection('EPSG:3857'),
+        tileSize: tileSize
+    });
 };
 
 ol.TileLoader.prototype._initTileLoader = function(map) {
@@ -3399,29 +3399,16 @@ ol.TileLoader.prototype._reloadTiles = function() {
 ol.TileLoader.prototype._updateTiles = function () {
     if (!this._map) { return; }
 
-    var bounds = this._getExtent();
-
     var zoom = this._view.getZoom();
-    var tileSize = this._tileSize;
+    var extent = this._view.calculateExtent(this._map.getSize());
+    var tileRange = this._tileGrid.getTileRangeForExtentAndZ(extent, zoom);
 
-    var mapTopLeft = mapProjection.toMapPoint(bounds[3], bounds[0], zoom, tileSize);
-    var mapBottomRight =  mapProjection.toMapPoint(bounds[1], bounds[2], zoom, tileSize);
-
-    var nwTilePoint = {
-            x: Math.floor(mapTopLeft.x / tileSize),
-            y: Math.floor(mapTopLeft.y / tileSize)
-        },
-        seTilePoint = {
-            x:  Math.floor(mapBottomRight.x / tileSize),
-            y: Math.floor(mapBottomRight.y / tileSize)
-        };
-
-    this._addTilesFromCenterOut(nwTilePoint, seTilePoint, zoom);
-    this._removeOtherTiles(nwTilePoint, seTilePoint);
+    this._addTilesFromCenterOut(tileRange, zoom);
+    this._removeOtherTiles(tileRange);
 };
 
-ol.TileLoader.prototype._removeOtherTiles = function(nwTilePoint, seTilePoint) {
-    var kArr, x, y, key;
+ol.TileLoader.prototype._removeOtherTiles = function(tileRange) {
+    var kArr, x, y, z, key;
     var zoom = this._view.getZoom();
 
     for (key in this._tiles) {
@@ -3432,41 +3419,11 @@ ol.TileLoader.prototype._removeOtherTiles = function(nwTilePoint, seTilePoint) {
             z = parseInt(kArr[2], 10);
 
             // remove tile if it's out of bounds
-            if (z !== zoom || x < nwTilePoint.x|| x > seTilePoint.x || y < nwTilePoint.y || y > seTilePoint.y) {
+            if (z !== zoom || x < tileRange.minX || x > tileRange.maxX || ((-y-1) < tileRange.minY) || (-y-1) > tileRange.maxY) {
                 this._removeTile(key);
             }
         }
     }
-};
-
-ol.TileLoader.prototype._getExtent  = function()
-{
-    var view = this._map.getView();
-    var extent = this._mecratorProjection(view.calculateExtent(this._map.getSize()));
-    if (Math.abs(extent[0] - extent[2]) >= 360) {
-        extent[0] = mapProjection.earthBounding.west;
-        extent[2] = mapProjection.earthBounding.east;
-    }
-    else {
-        if(extent[0] >= -180 && extent[2] <=180) {
-            return extent;
-        }
-        var center = ol.extent.getCenter(extent);
-        var width = ol.extent.getWidth(extent);
-
-        center[0] = this._normalizeLongitude(center[0]);
-
-        extent[0] = center[0] - width /2;
-        extent[2] = center[1] + width /2;
-
-        if(extent[0] < mapProjection.earthBounding.west)
-            extent[0] = mapProjection.earthBounding.west;
-
-        if(extent[1] > mapProjection.earthBounding.east)
-            extent[1] = mapProjection.earthBounding.east;
-    }
-
-    return extent;
 };
 
 ol.TileLoader.prototype._removeTile = function (key) {
@@ -3494,67 +3451,26 @@ ol.TileLoader.prototype._tileLoaded = function(tilePoint, tileData) {
         }
 };
 
-ol.TileLoader.prototype._normalizeLongitude = function(lon) {
-    while (lon < -180 ) lon += 360;
-    while (lon > 180) lon -= 360;
-    return lon;
-};
-
 ol.TileLoader.prototype.getTilePos = function (tilePoint) {
     var zoom = this._view.getZoom();
-    tilePoint = {
-        x: tilePoint.x * this._tileSize,
-        y: tilePoint.y * this._tileSize
-    };
-
-
-    var extent = this._mecratorProjection(this._view.calculateExtent(this._map.getSize()));
-    var bounds = this._getExtent();
-    var topLeft = this._getTopLeftInPixels();
-
-    var offsetX = 0, offsetY = 0;
-
-    if(topLeft[0] > 0) offsetX = topLeft[0];
-    if(topLeft[1] > 0) offsetY = topLeft[1];
-
-    var divTopLeft = mapProjection.toMapPoint(bounds[3], bounds[0], zoom, this._tileSize);
+    var extent = this._tileGrid.getTileCoordExtent([zoom, tilePoint.x, -tilePoint.y-1]);
+    var topLeft = this._map.getPixelFromCoordinate([extent[0], extent[3]]);
 
     return {
-        x: offsetX + tilePoint.x - divTopLeft.x,
-        y: offsetY + tilePoint.y - divTopLeft.y
+        x: topLeft[0],
+        y: topLeft[1]
     };
 };
 
-ol.TileLoader.prototype._getTopLeftInPixels = function(){
-    var center = this._mecratorProjection(this._view.getCenter());
-    var w = Math.floor(Math.abs(center[0]) / 180);
-
-    if(w == 0){
-        return this._map.getPixelFromCoordinate(this._olProjection([mapProjection.earthBounding.west,
-           mapProjection.earthBounding.north]));
-    }
-    else{
-        var normLon = this._normalizeLongitude(center[0]);
-        var diff = normLon > 0 ? 180 + normLon : 180 - Math.abs(normLon);
-        return this._map.getPixelFromCoordinate(this._olProjection([center[0] - diff,
-            mapProjection.earthBounding.north]));
-    }
-};
-
-ol.TileLoader.prototype._addTilesFromCenterOut = function (nwTilePoint, seTilePoint, zoom) {
-        var queue = [],
-            center = {
-                x: (nwTilePoint.x + seTilePoint.x) * 0.5,
-                y: (nwTilePoint.y + seTilePoint.y) * 0.5
-            };
-
+ol.TileLoader.prototype._addTilesFromCenterOut = function (tileRange, zoom) {
+        var queue = [];
         var j, i, point;
 
-        for (j = nwTilePoint.y; j <= seTilePoint.y; j++) {
-            for (i = nwTilePoint.x; i <= seTilePoint.x; i++) {
+        for (j = tileRange.minY; j <= tileRange.maxY; j++) {
+            for (i = tileRange.minX; i <= tileRange.maxX; i++) {
                 point = {
                     x: i,
-                    y: j,
+                    y: -j - 1,
                     zoom: zoom
                 };
 
@@ -3567,17 +3483,6 @@ ol.TileLoader.prototype._addTilesFromCenterOut = function (nwTilePoint, seTilePo
         var tilesToLoad = queue.length;
 
         if (tilesToLoad === 0) { return; }
-
-        function distanceToCenterSq(point) {
-            var dx = point.x - center.x;
-            var dy = point.y - center.y;
-            return dx * dx + dy * dy;
-        }
-
-        // load tiles in order of their distance to center
-        queue.sort(function (a, b) {
-            return distanceToCenterSq(a) - distanceToCenterSq(b);
-        });
 
         this._tilesToLoad += tilesToLoad;
 
@@ -3594,43 +3499,7 @@ ol.TileLoader.prototype._addTilesFromCenterOut = function (nwTilePoint, seTilePo
 
 module.exports = ol.TileLoader;
 
-},{"./projection.js":21}],21:[function(require,module,exports){
-
-module.exports = {
-    earthBounding :
-    {
-        north : 85.05112878,
-        west: -180,
-        south : -85.05112878,
-        east: 180
-    },
-    clip: function(number, min, max){
-        return Math.min(Math.max(number, min), max);
-    },
-    getMapSize: function(zoom, tileSize){
-      return Math.pow(2.0, zoom) * tileSize;
-    },
-    toMapPoint: function(lat, long, zoom, tileSize){
-        lat = this.clip(lat, this.earthBounding.south, this.earthBounding.north);
-        long = this.clip(long, this.earthBounding.west, this.earthBounding.east);
-        var x = (long + 180.0) / 360.0;
-        var sinLat = Math.sin(lat * Math.PI / 180.0);
-        var y = 0.5 - Math.log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * Math.PI);
-
-        var mapSize = this.getMapSize(zoom, tileSize);
-
-        var pointX = this.clip(x * mapSize + 0.5, 0.0, mapSize - 1.0);
-        var pointY = this.clip(y * mapSize + 0.5, 0.0, mapSize - 1.0);
-
-        return {
-            x: Math.floor(pointX),
-            y: Math.floor(pointY),
-                zoom: zoom
-        };
-    }
-};
-
-},{}],22:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 (function (global){
 var carto = global.carto || require('carto');
 var torque = require('../');
@@ -4080,7 +3949,7 @@ ol.TorqueLayer.prototype = torque.extend({},
 
 module.exports = ol.TorqueLayer;
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"./canvas_layer":18,"carto":undefined}],23:[function(require,module,exports){
+},{"../":11,"./canvas_layer":18,"carto":undefined}],22:[function(require,module,exports){
 /*
 # metrics profiler
 
@@ -4224,7 +4093,7 @@ Profiler.metric = function(name) {
 
 module.exports = Profiler;
 
-},{}],24:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 module.exports = {
     json: require('./json'),
     JsonArray: require('./jsonarray'),
@@ -4232,7 +4101,7 @@ module.exports = {
     tileJSON: require('./tilejson')
 };
 
-},{"./json":25,"./jsonarray":26,"./tilejson":27,"./windshaft":28}],25:[function(require,module,exports){
+},{"./json":24,"./jsonarray":25,"./tilejson":26,"./windshaft":27}],24:[function(require,module,exports){
 var torque = require('../');
 var Profiler = require('../profiler');
 
@@ -4811,7 +4680,7 @@ var Profiler = require('../profiler');
 
 module.exports = json;
 
-},{"../":11,"../profiler":23}],26:[function(require,module,exports){
+},{"../":11,"../profiler":22}],25:[function(require,module,exports){
 var torque = require('../');
 var Profiler = require('../profiler');
 
@@ -5041,7 +4910,7 @@ var Profiler = require('../profiler');
 
   module.exports = json;
 
-},{"../":11,"../profiler":23}],27:[function(require,module,exports){
+},{"../":11,"../profiler":22}],26:[function(require,module,exports){
   var torque = require('../');
 
   var Uint8Array = torque.types.Uint8Array;
@@ -5381,7 +5250,7 @@ var Profiler = require('../profiler');
   };
 
   module.exports = tileJSON;
-},{"../":11}],28:[function(require,module,exports){
+},{"../":11}],27:[function(require,module,exports){
   var torque = require('../');
   var Profiler = require('../profiler');
 
@@ -5871,7 +5740,7 @@ var Profiler = require('../profiler');
 
   module.exports = windshaft;
 
-},{"../":11,"../profiler":23}],29:[function(require,module,exports){
+},{"../":11,"../profiler":22}],28:[function(require,module,exports){
   var TAU = Math.PI*2;
   // min value to render a line. 
   // it does not make sense to render a line of a width is not even visible
@@ -5964,13 +5833,13 @@ module.exports = {
     MAX_SPRITE_RADIUS: MAX_SPRITE_RADIUS
 };
 
-},{}],30:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 module.exports = {
     cartocss: require('./cartocss_render'),
     Point: require('./point'),
     Rectangle: require('./rectangle')
 };
-},{"./cartocss_render":29,"./point":31,"./rectangle":32}],31:[function(require,module,exports){
+},{"./cartocss_render":28,"./point":30,"./rectangle":31}],30:[function(require,module,exports){
 (function (global){
 var torque = require('../');
 var cartocss = require('./cartocss_render');
@@ -6462,7 +6331,7 @@ var Filters = require('./torque_filters');
 module.exports = PointRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"../profiler":23,"./cartocss_render":29,"./torque_filters":33,"carto":undefined}],32:[function(require,module,exports){
+},{"../":11,"../profiler":22,"./cartocss_render":28,"./torque_filters":32,"carto":undefined}],31:[function(require,module,exports){
 (function (global){
 var carto = global.carto || require('carto');
 
@@ -6626,7 +6495,7 @@ var carto = global.carto || require('carto');
 module.exports = RectanbleRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"carto":undefined}],33:[function(require,module,exports){
+},{"carto":undefined}],32:[function(require,module,exports){
 /*
  Based on simpleheat, a tiny JavaScript library for drawing heatmaps with Canvas, 
  by Vladimir Agafonkin
@@ -6718,7 +6587,7 @@ torque_filters.prototype = {
 
 module.exports = torque_filters;
 
-},{}],34:[function(require,module,exports){
+},{}],33:[function(require,module,exports){
 (function (global){
 var torque = require('./core');
 
