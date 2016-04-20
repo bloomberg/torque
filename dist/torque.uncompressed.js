@@ -3200,29 +3200,20 @@ ol.CanvasLayer = function(options) {
         subdomains: 'abc',
         errorTileUrl: '',
         attribution: '',
-        zoomOffset: 0,
         opacity: 1,
         tileLoader: false, // installs tile loading events
-        zoomAnimation: true,
         tileSize: 256
     };
 
     options = options || {};
     torque.extend(this.options, options);
 
-    ol.TileLoader.call(this, this.options.tileSize);
+    ol.TileLoader.call(this, this.options.tileSize, this.options.maxZoom);
 
     this.render = this.render.bind(this);
     this._canvas = this._createCanvas();
 
     this.root_.appendChild(this._canvas);
-
-    // backCanvas for zoom animation
-    if (this.options.zoomAnimation) {
-        this._backCanvas = this._createCanvas();
-        this.root_.appendChild(this._backCanvas);
-        this._backCanvas.style.display = 'none';
-    }
 
     this._ctx = this._canvas.getContext('2d');
     this.currentAnimationFrame = -1;
@@ -3247,41 +3238,23 @@ ol.CanvasLayer.prototype.setMap = function(map){
         //remove
         this._map.unByKey(this.pointdragKey_);
         this._map.unByKey(this.sizeChangedKey_);
+        this._map.unByKey(this.moveendKey_);
+        this._map.getView().unByKey(this.centerChanged_);
     }
     this._map = map;
-
-
-    //TODO: there is pointerdrag event in OpenLayers. Maybe use it in later on
-    // hack: listen to predrag event launched by dragging to
-    // set container in position (0, 0) in screen coordinates
-    //map.dragging._draggable.on('predrag', function() {
-    //    var d = map.dragging._draggable;
-    //    L.DomUtil.setPosition(this._canvas, { x: -d._newPos.x, y: -d._newPos.y });
-    //}, this);
 
     if(map){
         var overlayContainer  = this._map.getViewport().getElementsByClassName("ol-overlaycontainer")[0];
         overlayContainer.appendChild(this.root_);
 
-        //map.on({ 'viewreset': this._reset }, this);
-        this.pointdragKey_ = map.on('pointerdrag', this.redraw, this);
-        this.centerChanged_ = map.getView().on("change:center", this._reposition, this);
+        this.pointdragKey_ = map.on('pointerdrag', this._render, this);
+        this.moveendKey_ = map.on("moveend", this._render, this);
+        this.centerChanged_ = map.getView().on("change:center", this._render, this);
         this.sizeChangedKey_ = map.on('change:size', this._reset, this);
-
-        if (this.options.zoomAnimation) {
-            /*map.on({
-             'zoomanim': this._animateZoom,
-             'zoomend': this._endZoomAnim,
-             'moveend': this._reset
-             }, this); */
-
-            map.on("moveend", this._reset, this);
-        }
 
         if(this.options.tileLoader) {
             ol.TileLoader.prototype._initTileLoader.call(this, map);
         }
-
         this._reset();
     }
 };
@@ -3299,8 +3272,6 @@ ol.CanvasLayer.prototype._createCanvas = function() {
 
 ol.CanvasLayer.prototype._reset = function () {
     this._resize();
-    //need to figure out position
-    this._reposition();
 };
 
 ol.CanvasLayer.prototype._resize =  function() {
@@ -3322,10 +3293,6 @@ ol.CanvasLayer.prototype._resize =  function() {
     }
 };
 
-ol.CanvasLayer.prototype._reposition = function(){
-    this._render();
-};
-
 ol.CanvasLayer.prototype._render = function() {
     if (this.currentAnimationFrame >= 0) {
         this.cancelAnimationFrame.call(window, this.currentAnimationFrame);
@@ -3342,7 +3309,7 @@ ol.CanvasLayer.prototype.getAttribution = function() {
 };
 
 ol.CanvasLayer.prototype.draw = function() {
-        return this._reset();
+        return this._render();
 };
 
 ol.CanvasLayer.prototype.redraw = function(direct) {
@@ -3356,7 +3323,7 @@ if (typeof ol !== 'undefined') {
 }
 
 },{"./torque":21}],20:[function(require,module,exports){
-ol.TileLoader = function(tileSize){
+ol.TileLoader = function(tileSize, maxZoom){
     this._tileSize = tileSize;
     this._tiles = {};
     this._tilesLoading = {};
@@ -3365,6 +3332,7 @@ ol.TileLoader = function(tileSize){
 
     this._tileGrid = ol.tilegrid.createXYZ({
         extent: ol.tilegrid.extentFromProjection('EPSG:3857'),
+        maxZoom: maxZoom,
         tileSize: tileSize
     });
 };
@@ -3438,17 +3406,21 @@ ol.TileLoader.prototype._tileKey = function(tilePoint) {
 
 ol.TileLoader.prototype._tileShouldBeLoaded = function (tilePoint) {
     var k = this._tileKey(tilePoint);
-    return !(k in this._tiles) && !(k in this._tilesLoading);
+    return !(k in this._tiles)  && !(k in this._tilesLoading);
+};
+
+ol.TileLoader.prototype._removeFromTilesLoading = function(tilePoint){
+    this._tilesToLoad--;
+    var k = this._tileKey(tilePoint);
+    delete this._tilesLoading[k];
+    if(this._tilesToLoad === 0) {
+        this.fire("tilesLoaded");
+    }
 };
 
 ol.TileLoader.prototype._tileLoaded = function(tilePoint, tileData) {
-        this._tilesToLoad--;
-        var k = this._tileKey(tilePoint);
-        this._tiles[k] = tileData;
-        delete this._tilesLoading[k];
-        if(this._tilesToLoad === 0) {
-            this.fire("tilesLoaded");
-        }
+    var k = this._tileKey(tilePoint);
+    this._tiles[k] = tileData;
 };
 
 ol.TileLoader.prototype.getTilePos = function (tilePoint) {
@@ -3583,14 +3555,13 @@ ol.TorqueLayer = function(options){
     // for each tile shown on the map request the data
     this.on('tileAdded', function(t) {
         var tileData = this.provider.getTileData(t, t.zoom, function(tileData) {
-            // don't load tiles that are not being shown
+            self._removeFromTilesLoading(t);
             if (t.zoom !== self._map.getView().getZoom()) return;
             self._tileLoaded(t, tileData);
-            self._clearTileCaches();
+            self.fire('tileLoaded');
             if (tileData) {
                 self.redraw();
             }
-            self.fire('tileLoaded');
         });
     }, this);
 };
@@ -3614,21 +3585,6 @@ ol.TorqueLayer.prototype = torque.extend({},
     onAdd: function(map)
     {
         ol.CanvasLayer.prototype.setMap.call(this, map);
-    },
-
-    _clearTileCaches: function() {
-        var t, tile;
-        for(t in this._tiles) {
-            tile = this._tiles[t];
-            if (tile && tile._tileCache) {
-                tile._tileCache = null;
-            }
-        }
-    },
-
-    _clearCaches: function() {
-        this.renderer && this.renderer.clearSpriteCache();
-        this._clearTileCaches();
     },
 
     _pauseOnZoom: function() {
@@ -3739,7 +3695,6 @@ ol.TorqueLayer.prototype = torque.extend({},
     setKeys: function(keys, options) {
         this.keys = keys;
         this.animator.step(this.getKey());
-        this._clearTileCaches();
         this.redraw(options && options.direct);
         this.fire('change:time', {
             time: this.getTime(),
@@ -3843,7 +3798,6 @@ ol.TorqueLayer.prototype = torque.extend({},
         if (options.animationDuration) {
             this.animator.duration(options.animationDuration);
         }
-        this._clearCaches();
         this.redraw();
         return this;
     },
