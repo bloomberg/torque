@@ -3360,7 +3360,7 @@ ol.TileLoader.prototype._reloadTiles = function() {
 ol.TileLoader.prototype._updateTiles = function () {
     if (!this._map) { return; }
 
-    var zoom = this._view.getZoom();
+    var zoom =  this._tileGrid.getZForResolution(this._view.getResolution());
     var extent = this._view.calculateExtent(this._map.getSize());
     var tileRange = this._tileGrid.getTileRangeForExtentAndZ(extent, zoom);
 
@@ -3376,7 +3376,8 @@ ol.TileLoader.prototype._updateTiles = function () {
 
 ol.TileLoader.prototype._removeOtherTiles = function(tileRange) {
     var kArr, x, y, z, key;
-    var zoom = this._view.getZoom();
+
+    var zoom =  this._tileGrid.getZForResolution(this._view.getResolution());
 
     for (key in this._tiles) {
         if (this._tiles.hasOwnProperty(key)) {
@@ -3423,7 +3424,7 @@ ol.TileLoader.prototype._tileLoaded = function(tilePoint, tileData) {
 };
 
 ol.TileLoader.prototype.getTilePos = function (tilePoint) {
-    var zoom = this._view.getZoom();
+    var zoom =  this._tileGrid.getZForResolution(this._view.getResolution());
     var extent = this._tileGrid.getTileCoordExtent([zoom, tilePoint.x, -tilePoint.y-1]);
     var topLeft = this._map.getPixelFromCoordinate([extent[0], extent[3]]);
 
@@ -3555,7 +3556,7 @@ ol.TorqueLayer = function(options){
     this.on('tileAdded', function(t) {
         var tileData = this.provider.getTileData(t, t.zoom, function(tileData) {
             self._removeFromTilesLoading(t);
-            if (t.zoom !== self._map.getView().getZoom()) return;
+            if (t.zoom !== self._tileGrid.getZForResolution(self._view.getResolution())) return;
             self._tileLoaded(t, tileData);
             self.fire('tileLoaded');
             if (tileData) {
