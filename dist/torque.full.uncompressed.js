@@ -3364,6 +3364,12 @@ ol.TileLoader.prototype._updateTiles = function () {
     var extent = this._view.calculateExtent(this._map.getSize());
     var tileRange = this._tileGrid.getTileRangeForExtentAndZ(extent, zoom);
 
+    //exporting properties due to compiler obfuscation
+    tileRange.minX = tileRange[Object.keys(tileRange)[0]];
+    tileRange.maxX = tileRange[Object.keys(tileRange)[1]];
+    tileRange.minY = tileRange[Object.keys(tileRange)[2]];
+    tileRange.maxY = tileRange[Object.keys(tileRange)[3]];
+
     this._addTilesFromCenterOut(tileRange, zoom);
     this._removeOtherTiles(tileRange);
 };
