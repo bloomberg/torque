@@ -3331,7 +3331,6 @@ ol.TileLoader = function(tileSize, maxZoom){
     this._updateTiles = this._updateTiles.bind(this);
 
     this._tileGrid = ol.tilegrid.createXYZ({
-        extent: ol.tilegrid.extentFromProjection('EPSG:3857'),
         maxZoom: maxZoom,
         tileSize: tileSize
     });
@@ -3369,15 +3368,8 @@ ol.TileLoader.prototype._updateTiles = function () {
 
     var zoom =  this._tileGrid.getZForResolution(this._view.getResolution());
     var extent = this._view.calculateExtent(this._map.getSize());
-    var tileRange = this._tileGrid.getTileRangeForExtentAndZ(extent, zoom);
 
-    //exporting properties due to compiler obfuscation
-    tileRange.minX = tileRange[Object.keys(tileRange)[0]];
-    tileRange.maxX = tileRange[Object.keys(tileRange)[1]];
-    tileRange.minY = tileRange[Object.keys(tileRange)[2]];
-    tileRange.maxY = tileRange[Object.keys(tileRange)[3]];
-
-    this._addTilesFromCenterOut(tileRange, zoom);
+    var tileRange = this._requestTilesForExtentAndZ(extent, zoom);
     this._removeOtherTiles(tileRange);
 };
 
@@ -3441,31 +3433,28 @@ ol.TileLoader.prototype.getTilePos = function (tilePoint) {
     };
 };
 
-ol.TileLoader.prototype._addTilesFromCenterOut = function (tileRange, zoom) {
-        var queue = [];
-        var j, i, point;
+ol.TileLoader.prototype._requestTilesForExtentAndZ = function (extent, zoom) {
+    var queue = [];
+    var tileCoords = [];
 
-        for (j = tileRange.minY; j <= tileRange.maxY; j++) {
-            for (i = tileRange.minX; i <= tileRange.maxX; i++) {
-                point = {
-                    x: i,
-                    y: -j - 1,
-                    zoom: zoom
-                };
+    this._tileGrid.forEachTileCoord(extent, zoom, function(coord){
+        tileCoords.push(coord);
+        var point = {
+            x: coord[1],
+            y: -coord[2] - 1,
+            zoom: coord[0]
+        };
 
-                if (this._tileShouldBeLoaded(point)) {
-                    queue.push(point);
-                }
-            }
+        if (this._tileShouldBeLoaded(point)) {
+            queue.push(point);
         }
+    }.bind(this));
 
-        var tilesToLoad = queue.length;
-
-        if (tilesToLoad === 0) { return; }
-
+    var tilesToLoad = queue.length;
+    if (tilesToLoad > 0) {
         this._tilesToLoad += tilesToLoad;
 
-        for (i = 0; i < tilesToLoad; i++) {
+        for (var i = 0; i < tilesToLoad; i++) {
             var t = queue[i];
             var k = this._tileKey(t);
             this._tilesLoading[k] = t;
@@ -3474,7 +3463,17 @@ ol.TileLoader.prototype._addTilesFromCenterOut = function (tileRange, zoom) {
         }
 
         this.fire("tilesLoading");
+    }
+
+    var tileRange = {
+        minX : tileCoords[0][1],
+        maxX : tileCoords [tileCoords.length - 1][1],
+        minY : tileCoords[0][2],
+        maxY : tileCoords [tileCoords.length - 1] [2]
     };
+
+    return tileRange;
+};
 
 module.exports = ol.TileLoader;
 
