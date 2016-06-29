@@ -3335,7 +3335,27 @@ ol.TileLoader.prototype._initTileLoader = function(map) {
     this._centerChangedId = this._view.on("change:center", function(e){
         this._updateTiles();
     },  this);
-    this._resolutionChangedId = this._view.on("change:resolution", this._updateTiles);
+
+    this._postcomposeKey = undefined;
+
+    this._resolutionChangedId = this._view.on("change:resolution", function(evt){
+        this._currentResolution = this._view.getResolution();
+
+        if(this._postcomposeKey) return;
+        this._postcomposeKey = this._map.on("postcompose", function(evt) {
+            console.log("Map Postcompose: " + evt.frameState.viewState.resolution);
+
+            if(evt.frameState.viewState.resolution === this._currentResolution){
+                console.log("undated tiles");
+                this._updateTiles();
+                this._map.unByKey(this._postcomposeKey);
+                this._postcomposeKey = undefined;
+            }
+        }, this);
+    }, this);
+
+
+
     this._updateTiles();
 };
 ol.TileLoader.prototype._removeTileLoader = function() {
