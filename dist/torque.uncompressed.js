@@ -2145,7 +2145,7 @@ module.exports.GMapsTorqueLayer = gmaps.GMapsTorqueLayer;
 module.exports.GMapsTiledTorqueLayer = gmaps.GMapsTiledTorqueLayer;
 
 require('./ol');
-},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":23,"./renderer":29,"./request":33}],12:[function(require,module,exports){
+},{"./animator":2,"./cartocss_reference":3,"./common":4,"./core":5,"./gmaps":9,"./leaflet":13,"./math":16,"./mercator":17,"./ol":19,"./provider":23,"./renderer":30,"./request":34}],12:[function(require,module,exports){
 require('./leaflet_tileloader_mixin');
 
 /**
@@ -2409,7 +2409,6 @@ if (typeof L !== 'undefined') {
 L.Mixin.TileLoader = {
 
   _initTileLoader: function() {
-    this._tiles = {}
     this._tilesLoading = {};
     this._tilesToLoad = 0;
     this._map.on({
@@ -2586,6 +2585,7 @@ L.TorqueLayer = L.CanvasLayer.extend({
     }
     options.tileLoader = true;
     this.keys = [0];
+    this._tiles = {};
     Object.defineProperty(this, 'key', {
       get: function() {
         return this.getKey();
@@ -2593,7 +2593,9 @@ L.TorqueLayer = L.CanvasLayer.extend({
     });
     this.prevRenderedKey = 0;
     if (options.cartocss) {
-      torque.extend(options, torque.common.TorqueLayer.optionsFromCartoCSS(options.cartocss));
+      // We're only passing the Map header to the global options because the parser won't like turbocarto expressions
+      var headerCartoCSS = options.cartocss.replace(/\n/g,'').match(/Map\s*?\{.*?}/g)[0];
+      torque.extend(options, torque.common.TorqueLayer.optionsFromCartoCSS(headerCartoCSS));
     }
 
     options.resolution = options.resolution || 2;
@@ -2637,7 +2639,9 @@ L.TorqueLayer = L.CanvasLayer.extend({
     if (this.options.tileJSON) this.options.provider = 'tileJSON';
 
     this.provider = new this.providers[this.options.provider](options);
+    options.layer = this;
     this.renderer = new this.renderers[this.options.renderer](this.getCanvas(), options);
+
 
     options.ready = function() {
       self.fire("change:bounds", {
@@ -2650,6 +2654,10 @@ L.TorqueLayer = L.CanvasLayer.extend({
       });
       self.setKeys(self.getKeys());
     };
+
+    this.on('tileLoaded', function () {
+      self.renderer.setCartoCSS(self.renderer.style);
+    })
 
     this.renderer.on("allIconsLoaded", this.render.bind(this));
 
@@ -2943,25 +2951,25 @@ L.TorqueLayer = L.CanvasLayer.extend({
   setCartoCSS: function(cartocss) {
     if (this.provider.options.named_map) throw new Error("CartoCSS style on named maps is read-only");
     if (!this.renderer) throw new Error('renderer is not valid');
-    var shader = new carto.RendererJS().render(cartocss);
-    this.renderer.setShader(shader);
+    this.renderer.setCartoCSS(cartocss, function () {
+      // provider options
+      var options = torque.common.TorqueLayer.optionsFromLayer(this.renderer._shader.findLayer({ name: 'Map' }));
+      this.provider.setCartoCSS && this.provider.setCartoCSS(cartocss);
+      if(this.provider.setOptions(options)) {
+        this._reloadTiles();
+      }
 
-    // provider options
-    var options = torque.common.TorqueLayer.optionsFromLayer(shader.findLayer({ name: 'Map' }));
-    this.provider.setCartoCSS && this.provider.setCartoCSS(cartocss);
-    if(this.provider.setOptions(options)) {
-      this._reloadTiles();
-    }
+      torque.extend(this.options, options);
 
-    torque.extend(this.options, options);
+      // animator options
+      if (options.animationDuration) {
+        this.animator.duration(options.animationDuration);
+      }
+      this._clearCaches();
+      this.redraw();
+      return this;
+    }.bind(this));
 
-    // animator options
-    if (options.animationDuration) {
-      this.animator.duration(options.animationDuration);
-    }
-    this._clearCaches();
-    this.redraw();
-    return this;
   },
 
   /**
@@ -5828,18 +5836,73 @@ module.exports = {
 };
 
 },{}],29:[function(require,module,exports){
+var d3 = require('d3');
+var jenks = require('turf-jenks');
+
+function TorqueDataSource (tiles) {
+  this.tiles = tiles
+}
+
+module.exports = TorqueDataSource
+
+TorqueDataSource.prototype.getName = function () {
+  return 'TorqueDataSource'
+}
+
+TorqueDataSource.prototype.getRamp = function (column, bins, method, callback) {
+  var ramp = []
+  var error = null
+  var values = Object.keys(this.tiles).map(function (t) {
+    return this.tiles[t].renderData;
+  }.bind(this)).reduce(function (p,c,i) {
+    for(var i = 0; i<c.length; i++) {
+      p.push(c[i]);
+    }
+    return p;
+  },[]);
+  var extent = d3.extent(values);
+  if (!method || method === 'equal' || method === 'jenks') {
+    var scale = d3.scale.linear().domain([0, bins]).range(extent)
+    ramp = d3.range(bins).map(scale)
+  } else if (method === 'quantiles') {
+    ramp = d3.scale.quantile().range(d3.range(bins)).domain(values).quantiles()
+  } else if (method === 'headstails') {
+    var sortedValues = values.sort(function(a, b) {
+      return a - b;
+    });
+    if (sortedValues.length < bins) {
+      error = 'Number of bins should be lower than total number of rows'
+    } else if (sortedValues.length === bins) {
+      ramp = sortedValues;
+    } else {
+      var mean = d3.mean(sortedValues);
+      ramp.push(mean);
+      for (var i = 1; i < bins; i++) {
+        ramp.push(d3.mean(sortedValues.filter(function (v) {
+          return v > ramp[length - 1];
+        })));
+      }
+    }
+  } else {
+    error = new Error('Quantification method ' + method + ' is not supported')
+  }
+  callback(error, ramp)
+}
+},{"d3":undefined,"turf-jenks":undefined}],30:[function(require,module,exports){
 module.exports = {
     cartocss: require('./cartocss_render'),
     Point: require('./point'),
     Rectangle: require('./rectangle')
 };
-},{"./cartocss_render":28,"./point":30,"./rectangle":31}],30:[function(require,module,exports){
+},{"./cartocss_render":28,"./point":31,"./rectangle":32}],31:[function(require,module,exports){
 (function (global){
 var torque = require('../');
 var cartocss = require('./cartocss_render');
 var Profiler = require('../profiler');
 var carto = global.carto || require('carto');
 var Filters = require('./torque_filters');
+var turbocarto = require('turbo-carto');
+var CartoDatasource = require('./datasource');
 
   var TAU = Math.PI * 2;
   var DEFAULT_CARTOCSS = [
@@ -5899,6 +5962,7 @@ var Filters = require('./torque_filters');
       throw new Error("canvas can't be undefined");
     }
     this.options = options;
+    this.layer = options.layer;
     this._canvas = canvas;
     this._ctx = canvas.getContext('2d');
     this._sprites = []; // sprites per layer
@@ -5906,7 +5970,8 @@ var Filters = require('./torque_filters');
     this._icons = {};
     this._iconsToLoad = 0;
     this._filters = new Filters(this._canvas, {canvasClass: options.canvasClass});
-    this.setCartoCSS(this.options.cartocss || DEFAULT_CARTOCSS);
+    this.style = this.options.cartocss || DEFAULT_CARTOCSS;
+    this.setCartoCSS(this.style);
     this.TILE_SIZE = 256;
     this._style = null;
     this._gradients = {};
@@ -5917,18 +5982,20 @@ var Filters = require('./torque_filters');
   torque.extend(PointRenderer.prototype, torque.Event, {
 
     clearCanvas: function() {
-      var canvas = this._canvas;
-      var color = this._Map['-torque-clear-color']
-      // shortcut for the default value
-      if (color  === "rgba(255, 255, 255, 0)" || !color) {
-        this._canvas.width = this._canvas.width;
-      } else {
-        var ctx = this._ctx;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        var compop = this._Map['comp-op']
-        ctx.globalCompositeOperation = compop2canvas(compop) || compop;
-        ctx.fillStyle = color;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (this._Map) {
+        var canvas = this._canvas;
+        var color = this._Map['-torque-clear-color']
+        // shortcut for the default value
+        if (color  === "rgba(255, 255, 255, 0)" || !color) {
+          this._canvas.width = this._canvas.width;
+        } else {
+          var ctx = this._ctx;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          var compop = this._Map['comp-op']
+          ctx.globalCompositeOperation = compop2canvas(compop) || compop;
+          ctx.fillStyle = color;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
       }
     },
 
@@ -5940,9 +6007,20 @@ var Filters = require('./torque_filters');
     //
     // sets the cartocss style to render stuff
     //
-    setCartoCSS: function(cartocss) {
-      // clean sprites
-      this.setShader(new carto.RendererJS().render(cartocss));
+    setCartoCSS: function(cartocss, callback) {
+      var self = this;
+      if (PointRenderer.isTurboCarto(cartocss)) {
+        var datasource = new CartoDatasource(self.layer._tiles);
+        turbocarto(cartocss, datasource, function (err, parsedCartoCSS) {
+          self.setShader(new carto.RendererJS().render(parsedCartoCSS));
+          self.layer.redraw();
+          self.layer.animator.start();
+          callback && callback();
+        });
+      } else {
+        self.setShader(new carto.RendererJS().render(cartocss));
+        callback && callback();
+      }
     },
 
     setShader: function(shader) {
@@ -6320,12 +6398,23 @@ var Filters = require('./torque_filters');
   }
 });
 
+PointRenderer.isTurboCarto = function (cartocss) {
+  var reservedWords = ['ramp', 'colorbrewer', 'buckets']
+  var isTurbo = reservedWords
+    .map(function (w) {
+      return w + '('
+    })
+    .map(String.prototype.indexOf.bind(cartocss))
+    .every(function (f) { return f === -1 })
+  return !isTurbo
+}
+
 
   // exports public api
 module.exports = PointRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../":11,"../profiler":22,"./cartocss_render":28,"./torque_filters":32,"carto":undefined}],31:[function(require,module,exports){
+},{"../":11,"../profiler":22,"./cartocss_render":28,"./datasource":29,"./torque_filters":33,"carto":undefined,"turbo-carto":undefined}],32:[function(require,module,exports){
 (function (global){
 var carto = global.carto || require('carto');
 
@@ -6489,7 +6578,7 @@ var carto = global.carto || require('carto');
 module.exports = RectanbleRenderer;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"carto":undefined}],32:[function(require,module,exports){
+},{"carto":undefined}],33:[function(require,module,exports){
 /*
  Based on simpleheat, a tiny JavaScript library for drawing heatmaps with Canvas, 
  by Vladimir Agafonkin
@@ -6581,7 +6670,7 @@ torque_filters.prototype = {
 
 module.exports = torque_filters;
 
-},{}],33:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 (function (global){
 var torque = require('./core');
 
