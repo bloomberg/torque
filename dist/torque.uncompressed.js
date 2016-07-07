@@ -2276,7 +2276,7 @@ L.CanvasLayer = L.Class.extend({
 
     var origin = {
       x:  newCenter.x - oldCenter.x + pos.x,
-      y:  newCenter.y - oldCenter.y + pos.y,
+      y:  newCenter.y - oldCenter.y + pos.y
     };
 
     var bg = back;
@@ -2688,7 +2688,7 @@ L.TorqueLayer = L.CanvasLayer.extend({
   onAdd: function (map) {
     map.on({
       'zoomend': this._clearCaches,
-      'zoomstart': this._pauseOnZoom,
+      'zoomstart': this._pauseOnZoom
     }, this);
 
     map.on({
@@ -2702,7 +2702,7 @@ L.TorqueLayer = L.CanvasLayer.extend({
     this._removeTileLoader();
     map.off({
       'zoomend': this._clearCaches,
-      'zoomstart': this._pauseOnZoom,
+      'zoomstart': this._pauseOnZoom
     }, this);
     map.off({
       'zoomend': this._resumeOnZoom
@@ -3313,7 +3313,11 @@ ol.CanvasLayer.prototype.draw = function() {
 };
 
 ol.CanvasLayer.prototype.redraw = function(direct) {
-    return this._render();
+    if (direct) {
+        this.render();
+    } else {
+        this._render();
+    }
 };
 
 module.exports = ol.CanvasLayer;
@@ -3347,21 +3351,17 @@ ol.TileLoader.prototype._initTileLoader = function(map) {
 
     this._resolutionChangedId = this._view.on("change:resolution", function(evt){
         this._currentResolution = this._view.getResolution();
-
         if(this._postcomposeKey) return;
+        this.fire("mapZoomStart");
         this._postcomposeKey = this._map.on("postcompose", function(evt) {
-            console.log("Map Postcompose: " + evt.frameState.viewState.resolution);
-
             if(evt.frameState.viewState.resolution === this._currentResolution){
-                console.log("undated tiles");
                 this._updateTiles();
                 this._map.unByKey(this._postcomposeKey);
                 this._postcomposeKey = undefined;
+                this.fire("mapZoomEnd");
             }
         }, this);
     }, this);
-
-
 
     this._updateTiles();
 };
@@ -3590,6 +3590,16 @@ ol.TorqueLayer = function(options){
             }
         });
     }, this);
+
+    this.on('mapZoomStart', function(){
+        this.getCanvas().style.display = "none";
+        this._pauseOnZoom();
+    }, this);
+
+    this.on('mapZoomEnd', function() {
+        this.getCanvas().style.display = "block";
+        this._resumeOnZoom();
+    }, this);
 };
 
 ol.TorqueLayer.prototype = torque.extend({},
@@ -3608,9 +3618,13 @@ ol.TorqueLayer.prototype = torque.extend({},
         'pixel': torque.renderer.Rectangle
     },
 
-    onAdd: function(map)
-    {
+    onAdd: function(map){
         ol.CanvasLayer.prototype.setMap.call(this, map);
+    },
+
+    onRemove: function(map) {
+        this.fire('remove');
+        this._removeTileLoader();
     },
 
     _pauseOnZoom: function() {
